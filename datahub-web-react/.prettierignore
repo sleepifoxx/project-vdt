@@ -1,0 +1,8 @@
+../docs-website
+../docs/generated
+**/.venv
+**/venv
+**/.tox
+**/build
+**/.gradle
+**/.pytest_cache
