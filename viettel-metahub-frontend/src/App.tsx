@@ -7,7 +7,6 @@ import HomePage from './pages/HomePage';
 import SearchPage from './pages/SearchPage';
 import ClassificationPage from './pages/ClassificationPage';
 import SettingsPage from './pages/SettingsPage';
-import MetadataInputPage from './pages/MetadataInputPage';
 import LoginPage from './pages/LoginPage';
 
 export default function App() {
@@ -20,7 +19,6 @@ export default function App() {
                     <Route path="/search" element={<SearchPage />} />
                     <Route path="/classification" element={<ClassificationPage />} />
                     <Route path="/settings" element={<SettingsPage />} />
-                    <Route path="/metadata-input" element={<MetadataInputPage />} />
                     <Route path="*" element={<Navigate to="/" replace />} />
                 </Routes>
             </BrowserRouter>

@@ -1,5 +1,5 @@
 import { graphqlQuery, apiClient } from './client';
-import type { MetadataEntity, EntityType, MetadataFormData } from '../types';
+import type { MetadataEntity, EntityType, MetadataFormData, Department, Project, ConnectionConfig, ConnectionType, AutoUpdateSchedule, ScheduleFrequency } from '../types';
 
 // ---------------------------------------------------------------------------
 // Search
@@ -29,6 +29,7 @@ const SEARCH_QUERY = `
                             }
                         }
                         tags { tags { tag { name urn } } }
+                        domain { domain { urn ... on Domain { properties { name } } } }
                         lastIngested
                         status { removed }
                     }
@@ -93,7 +94,9 @@ type GmsEntity = {
     properties?: { name?: string; description?: string };
     editableProperties?: { description?: string };
     ownership?: { owners: Array<{ owner: { username?: string; name?: string } }> };
-    tags?: { tags: Array<{ tag: { name: string } }> };
+    tags?: { tags: Array<{ tag: { name: string; urn: string } }> };
+    domain?: { domain?: { urn: string; properties?: { name: string } } };
+    domains?: { domains: Array<{ urn: string; properties?: { name: string } }> };
     lastIngested?: number;
     status?: { removed: boolean };
     dashboardId?: string;
@@ -133,6 +136,21 @@ function resolvePlatform(e: GmsEntity): string {
     return '';
 }
 
+function resolveDomains(e: GmsEntity): Array<{ urn: string; name: string }> {
+    // DataHub <0.12 exposes domain (singular aspect), newer versions may use domains
+    if (e.domain?.domain) {
+        const d = e.domain.domain;
+        return [{ urn: d.urn, name: d.properties?.name ?? d.urn.replace('urn:li:domain:', '') }];
+    }
+    if (e.domains?.domains?.length) {
+        return e.domains.domains.map((d) => ({
+            urn: d.urn,
+            name: d.properties?.name ?? d.urn.replace('urn:li:domain:', ''),
+        }));
+    }
+    return [];
+}
+
 function resolveOwner(e: GmsEntity): string {
     const first = e.ownership?.owners?.[0]?.owner;
     return first?.username ?? first?.name ?? '';
@@ -149,6 +167,7 @@ export function mapGmsEntityToLocal(e: GmsEntity): MetadataEntity {
         description,
         owner: resolveOwner(e),
         tags: e.tags?.tags.map((t) => t.tag.name) ?? [],
+        domains: resolveDomains(e),
         status: e.status?.removed ? 'REMOVED' : 'ACTIVE',
         lastUpdated: e.lastIngested
             ? new Date(e.lastIngested).toISOString()
@@ -170,6 +189,8 @@ export async function searchEntities(params: {
     query: string;
     types?: EntityType[];
     platforms?: string[];
+    domainUrns?: string[];
+    tagUrns?: string[];
     start?: number;
     count?: number;
 }): Promise<{ entities: MetadataEntity[]; total: number }> {
@@ -179,22 +200,46 @@ export async function searchEntities(params: {
         count: params.count ?? 10,
     };
 
-    if (params.types && params.types.length > 0) {
-        input.types = params.types;
-    }
+    // Always filter by explicit types so DataHub excludes system entities server-side.
+    // Fallback covers SearchPage's "search all" case (no user-selected filter).
+    const USER_FACING_TYPES: EntityType[] = ['DATASET', 'DASHBOARD', 'CHART', 'DATA_FLOW', 'DATA_JOB', 'CORP_USER', 'CORP_GROUP'];
+    input.types = params.types && params.types.length > 0 ? params.types : USER_FACING_TYPES;
+
+    const andFilters: Array<{ field: string; values: string[]; condition?: string }> = [];
 
     if (params.platforms && params.platforms.length > 0) {
-        input.filters = params.platforms.map((p) => ({
+        andFilters.push({
             field: 'platform',
-            value: `urn:li:dataPlatform:${p}`,
-        }));
+            values: params.platforms.map((p) => `urn:li:dataPlatform:${p}`),
+        });
+    }
+
+    if (params.domainUrns && params.domainUrns.length > 0) {
+        andFilters.push({
+            field: 'domains',
+            values: params.domainUrns,
+        });
+    }
+
+    if (params.tagUrns && params.tagUrns.length > 0) {
+        andFilters.push({
+            field: 'tags',
+            values: params.tagUrns,
+        });
+    }
+
+    if (andFilters.length > 0) {
+        input.orFilters = [{ and: andFilters }];
     }
 
     const data = await graphqlQuery<SearchResponse>(SEARCH_QUERY, { input });
     const { total, searchResults } = data.searchAcrossEntities;
+    const filtered = searchResults.filter(
+        (r) => !SYSTEM_ENTITY_URN_PREFIXES.some((prefix) => r.entity.urn.startsWith(prefix)),
+    );
     return {
-        entities: searchResults.map((r) => mapGmsEntityToLocal(r.entity)),
-        total,
+        entities: filtered.map((r) => mapGmsEntityToLocal(r.entity)),
+        total: filtered.length < searchResults.length ? total - (searchResults.length - filtered.length) : total,
     };
 }
 
@@ -206,6 +251,780 @@ export async function getEntityCount(types: EntityType[]): Promise<number> {
     });
     return data.searchAcrossEntities.total;
 }
+
+// ---------------------------------------------------------------------------
+// Domains (used as department/org tree)
+// ---------------------------------------------------------------------------
+
+const CREATE_DOMAIN_MUTATION = `
+    mutation createDomainViettel($input: CreateDomainInput!) {
+        createDomain(input: $input)
+    }
+`;
+
+export async function createDomain(params: {
+    name: string;
+    description?: string;
+    parentDomain?: string;
+}): Promise<string> {
+    const input: Record<string, unknown> = { name: params.name };
+    if (params.description) input.description = params.description;
+    if (params.parentDomain) input.parentDomain = params.parentDomain;
+    const data = await graphqlQuery<{ createDomain: string }>(CREATE_DOMAIN_MUTATION, { input });
+    return data.createDomain;
+}
+
+const CREATE_TAG_MUTATION = `
+    mutation createTagViettel($input: CreateTagInput!) {
+        createTag(input: $input)
+    }
+`;
+
+export async function createTag(params: {
+    name: string;
+    description?: string;
+}): Promise<string> {
+    const input: Record<string, unknown> = { id: params.name, name: params.name };
+    if (params.description) input.description = params.description;
+    const data = await graphqlQuery<{ createTag: string }>(CREATE_TAG_MUTATION, { input });
+    return data.createTag;
+}
+
+const LIST_DOMAINS_QUERY = `
+    query listDomainsViettel($input: ListDomainsInput!) {
+        listDomains(input: $input) {
+            total
+            domains {
+                urn
+                properties {
+                    name
+                    description
+                }
+            }
+        }
+    }
+`;
+
+type GmsDomainItem = {
+    urn: string;
+    properties?: { name: string; description?: string };
+};
+
+type ListDomainsResponse = {
+    listDomains: {
+        total: number;
+        domains: GmsDomainItem[];
+    };
+};
+
+export async function listDomains(): Promise<Department[]> {
+    const data = await graphqlQuery<ListDomainsResponse>(LIST_DOMAINS_QUERY, {
+        input: { start: 0, count: 200 },
+    });
+
+    return data.listDomains.domains.map((d) => {
+        const label = d.properties?.name ?? d.urn.replace('urn:li:domain:', '');
+        const shortCode = label.slice(0, 6).toUpperCase();
+        return {
+            id: d.urn,
+            name: label,
+            code: shortCode,
+            children: [],
+        };
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Aggregations (platform coverage + tag list as "projects")
+// ---------------------------------------------------------------------------
+
+const AGGREGATE_QUERY = `
+    query aggregateForViettel($input: AggregateAcrossEntitiesInput!) {
+        aggregateAcrossEntities(input: $input) {
+            facets {
+                field
+                aggregations {
+                    value
+                    count
+                }
+            }
+        }
+    }
+`;
+
+type AggregationItem = {
+    value: string;
+    count: number;
+};
+
+type AggregateResponse = {
+    aggregateAcrossEntities: {
+        facets: Array<{
+            field: string;
+            aggregations: AggregationItem[];
+        }>;
+    };
+};
+
+export async function getPlatformAggregations(): Promise<
+    Array<{ name: string; count: number; percent: number }>
+> {
+    const data = await graphqlQuery<AggregateResponse>(AGGREGATE_QUERY, {
+        input: { query: '*', types: [], orFilters: [], facets: ['platform'] },
+    });
+
+    const facet = data.aggregateAcrossEntities.facets.find((f) => f.field === 'platform');
+    if (!facet || facet.aggregations.length === 0) return [];
+
+    const sorted = [...facet.aggregations].sort((a, b) => b.count - a.count);
+    const top = sorted.slice(0, 6);
+    const total = sorted.reduce((s, a) => s + a.count, 0);
+    const topTotal = top.reduce((s, a) => s + a.count, 0);
+
+    const result = top.map((a) => ({
+        name: a.value.replace('urn:li:dataPlatform:', ''),
+        count: a.count,
+        percent: total > 0 ? Math.round((a.count / total) * 100) : 0,
+    }));
+
+    // Add "Khác" bucket if there are more platforms
+    if (sorted.length > 6) {
+        const otherCount = total - topTotal;
+        result.push({
+            name: 'Khác',
+            count: otherCount,
+            percent: total > 0 ? Math.round((otherCount / total) * 100) : 0,
+        });
+    }
+
+    return result;
+}
+
+const LIST_TAGS_QUERY = `
+    query listTagsViettel($input: SearchAcrossEntitiesInput!) {
+        searchAcrossEntities(input: $input) {
+            total
+            searchResults {
+                entity {
+                    urn
+                    ... on Tag {
+                        properties { name description }
+                    }
+                }
+            }
+        }
+    }
+`;
+
+type ListTagsResponse = {
+    searchAcrossEntities: {
+        total: number;
+        searchResults: Array<{
+            entity: {
+                urn: string;
+                properties?: { name: string; description?: string };
+            };
+        }>;
+    };
+};
+
+export async function getTagAggregations(): Promise<Project[]> {
+    const data = await graphqlQuery<ListTagsResponse>(LIST_TAGS_QUERY, {
+        input: { query: '*', types: ['TAG'], start: 0, count: 200 },
+    });
+
+    return data.searchAcrossEntities.searchResults.map((r) => {
+        const displayName = r.entity.properties?.name ?? r.entity.urn.replace('urn:li:tag:', '');
+        return {
+            id: r.entity.urn,
+            name: displayName,
+            code: displayName.slice(0, 6).toUpperCase(),
+            departmentId: '',
+            description: r.entity.properties?.description,
+            status: 'ACTIVE' as const,
+        };
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Entity domain & tag mutations via GraphQL
+// ---------------------------------------------------------------------------
+
+const SET_DOMAIN_MUTATION = `
+    mutation setDomain($entityUrn: String!, $domainUrn: String!) {
+        setDomain(entityUrn: $entityUrn, domainUrn: $domainUrn)
+    }
+`;
+
+const UNSET_DOMAIN_MUTATION = `
+    mutation unsetDomain($entityUrn: String!) {
+        unsetDomain(entityUrn: $entityUrn)
+    }
+`;
+
+const ADD_TAGS_MUTATION = `
+    mutation addTags($input: AddTagsInput!) {
+        addTags(input: $input)
+    }
+`;
+
+const REMOVE_TAG_MUTATION = `
+    mutation removeTag($input: TagAssociationInput!) {
+        removeTag(input: $input)
+    }
+`;
+
+// Direct GMS query (not Elasticsearch) — used to read back confirmed state after mutation
+const DATASET_TAGS_DOMAINS_QUERY = `
+    query getDatasetMeta($urn: String!) {
+        dataset(urn: $urn) {
+            urn
+            tags { tags { tag { name urn } } }
+            domain { domain { urn ... on Domain { properties { name } } } }
+        }
+    }
+`;
+
+type DatasetMetaResponse = {
+    dataset: {
+        urn: string;
+        tags?: { tags: Array<{ tag: { name: string; urn: string } }> };
+        domain?: { domain?: { urn: string; properties?: { name: string } } };
+    } | null;
+};
+
+// After a mutation, refetch the entity directly from GMS to get confirmed state.
+// This bypasses Elasticsearch so we always get the latest persisted data.
+export async function refetchEntityMeta(
+    urn: string,
+): Promise<{ tags: string[]; domains: Array<{ urn: string; name: string }> } | null> {
+    if (!urn.startsWith('urn:li:dataset:')) return null; // only datasets supported for now
+    try {
+        const data = await graphqlQuery<DatasetMetaResponse>(DATASET_TAGS_DOMAINS_QUERY, { urn });
+        if (!data.dataset) return null;
+        const tags = data.dataset.tags?.tags.map((t) => t.tag.name) ?? [];
+        const domainNode = data.dataset.domain?.domain;
+        const domains = domainNode
+            ? [{ urn: domainNode.urn, name: domainNode.properties?.name ?? domainNode.urn.replace('urn:li:domain:', '') }]
+            : [];
+        return { tags, domains };
+    } catch {
+        return null;
+    }
+}
+
+export async function updateEntityTags(entityUrn: string, tagUrns: string[]): Promise<void> {
+    // Remove all tags not in the new list, add all new ones.
+    // Simplest: add the full set via ADD_TAGS, then the caller handles removal separately.
+    // Here we do it in two calls: removeTags for old, addTags for new.
+    // DataHub's addTags/removeTags are idempotent so safe to call in any order.
+    if (tagUrns.length > 0) {
+        const result = await graphqlQuery<{ addTags: boolean }>(ADD_TAGS_MUTATION, {
+            input: { tagUrns, resourceUrn: entityUrn },
+        });
+        if (!result.addTags) {
+            console.error('[updateEntityTags] addTags returned false for', entityUrn, tagUrns);
+            throw new Error('addTags returned false');
+        }
+    }
+}
+
+export async function removeEntityTag(entityUrn: string, tagUrn: string): Promise<void> {
+    const result = await graphqlQuery<{ removeTag: boolean }>(REMOVE_TAG_MUTATION, {
+        input: { tagUrn, resourceUrn: entityUrn },
+    });
+    if (!result.removeTag) {
+        console.error('[removeEntityTag] removeTag returned false', entityUrn, tagUrn);
+        throw new Error('removeTag returned false');
+    }
+}
+
+export async function updateEntityDomains(entityUrn: string, domainUrns: string[]): Promise<void> {
+    if (domainUrns.length === 0) {
+        const result = await graphqlQuery<{ unsetDomain: boolean }>(UNSET_DOMAIN_MUTATION, { entityUrn });
+        if (!result.unsetDomain) {
+            console.error('[updateEntityDomains] unsetDomain returned false for', entityUrn);
+            throw new Error('unsetDomain returned false');
+        }
+    } else {
+        for (const domainUrn of domainUrns) {
+            const result = await graphqlQuery<{ setDomain: boolean }>(SET_DOMAIN_MUTATION, { entityUrn, domainUrn });
+            if (!result.setDomain) {
+                console.error('[updateEntityDomains] setDomain returned false for', entityUrn, domainUrn);
+                throw new Error('setDomain returned false');
+            }
+        }
+    }
+}
+
+const BATCH_SOFT_DELETE_MUTATION = `
+    mutation batchUpdateSoftDeleted($input: BatchUpdateSoftDeletedInput!) {
+        batchUpdateSoftDeleted(input: $input)
+    }
+`;
+
+export async function deleteEntity(urn: string): Promise<void> {
+    await graphqlQuery<{ batchUpdateSoftDeleted: boolean }>(BATCH_SOFT_DELETE_MUTATION, {
+        input: { urns: [urn], deleted: true },
+    });
+}
+
+const DATASET_SCHEMA_QUERY = `
+    query getDatasetSchema($urn: String!) {
+        dataset(urn: $urn) {
+            schemaMetadata {
+                fields {
+                    fieldPath
+                    nativeDataType
+                    description
+                    nullable
+                    isPartOfKey
+                }
+            }
+        }
+    }
+`;
+
+export type SchemaField = {
+    fieldPath: string;
+    nativeDataType: string;
+    description?: string;
+    nullable: boolean;
+    isPartOfKey: boolean;
+};
+
+type DatasetSchemaResponse = {
+    dataset: { schemaMetadata?: { fields: SchemaField[] } } | null;
+};
+
+export async function fetchDatasetSchema(urn: string): Promise<SchemaField[]> {
+    const data = await graphqlQuery<DatasetSchemaResponse>(DATASET_SCHEMA_QUERY, { urn });
+    return data.dataset?.schemaMetadata?.fields ?? [];
+}
+
+// ---------------------------------------------------------------------------
+// Ingestion sources — ConnectionConfig + AutoUpdateSchedule
+// ---------------------------------------------------------------------------
+
+const LIST_INGESTION_SOURCES_QUERY = `
+    query listIngestionSourcesViettel($input: ListIngestionSourcesInput!) {
+        listIngestionSources(input: $input) {
+            total
+            ingestionSources {
+                urn
+                name
+                type
+                config {
+                    recipe
+                }
+                schedule {
+                    interval
+                    timezone
+                }
+                executions(start: 0, count: 1) {
+                    total
+                    executionRequests {
+                        input {
+                            requestedAt
+                        }
+                        result {
+                            status
+                            startTimeMs
+                            durationMs
+                        }
+                    }
+                }
+            }
+        }
+    }
+`;
+
+const RUN_INGESTION_MUTATION = `
+    mutation createIngestionExecutionRequest($input: CreateIngestionExecutionRequestInput!) {
+        createIngestionExecutionRequest(input: $input)
+    }
+`;
+
+type GmsExecRequest = {
+    input?: { requestedAt?: number };
+    result?: { status: string; startTimeMs: number; durationMs?: number };
+};
+
+type GmsIngestionSource = {
+    urn: string;
+    name: string;
+    type: string;
+    config?: { recipe?: string };
+    schedule?: { interval?: string; timezone?: string };
+    executions?: {
+        total: number;
+        executionRequests: GmsExecRequest[];
+    };
+};
+
+type ListIngestionResponse = {
+    listIngestionSources: {
+        total: number;
+        ingestionSources: GmsIngestionSource[];
+    };
+};
+
+// Map connector type string → ConnectionType enum
+function mapIngestionType(type: string): ConnectionType {
+    const m: Record<string, ConnectionType> = {
+        mysql: 'MYSQL',
+        postgresql: 'POSTGRESQL',
+        postgres: 'POSTGRESQL',
+        oracle: 'ORACLE',
+        mssql: 'MSSQL',
+        sqlserver: 'MSSQL',
+        mongodb: 'MONGODB',
+        kafka: 'KAFKA',
+        hive: 'HIVE',
+        spark: 'SPARK',
+        rest_api: 'REST_API',
+    };
+    return m[type.toLowerCase()] ?? 'JDBC';
+}
+
+// Map last execution status → ConnectionConfig status
+function mapExecStatus(exec?: GmsExecRequest): ConnectionConfig['status'] {
+    if (!exec?.result) return 'DISCONNECTED';
+    const s = exec.result.status.toUpperCase();
+    if (s === 'SUCCESS') return 'CONNECTED';
+    if (s === 'FAILURE' || s === 'FAILED') return 'ERROR';
+    if (s === 'RUNNING' || s === 'PENDING') return 'TESTING';
+    return 'DISCONNECTED';
+}
+
+// Parse the JSON recipe to extract host, port, database, username
+function parseRecipe(recipe?: string, sourceType?: string): Pick<ConnectionConfig, 'host' | 'port' | 'database' | 'username'> {
+    const empty = { host: '', port: 0, database: '', username: '' };
+    if (!recipe) return empty;
+    try {
+        const r = JSON.parse(recipe);
+        const cfg = r?.source?.config ?? {};
+
+        // Most relational connectors: host_port = "host:port"
+        if (cfg.host_port) {
+            const [host, portStr] = String(cfg.host_port).split(':');
+            return {
+                host: host ?? '',
+                port: parseInt(portStr, 10) || 0,
+                database: cfg.database ?? cfg.database_pattern?.allow?.[0] ?? '',
+                username: cfg.username ?? '',
+            };
+        }
+
+        // Separate host + port fields (some connectors)
+        if (cfg.host) {
+            return {
+                host: cfg.host,
+                port: parseInt(cfg.port, 10) || 0,
+                database: cfg.database ?? '',
+                username: cfg.username ?? '',
+            };
+        }
+
+        // Kafka: connection.bootstrap = "broker:9092"
+        if (cfg.connection?.bootstrap) {
+            const [host, portStr] = String(cfg.connection.bootstrap).split(':');
+            return { host: host ?? '', port: parseInt(portStr, 10) || 9092, database: '', username: '' };
+        }
+
+        // MongoDB: connect_uri = "mongodb://user:pass@host:27017/db"
+        if (cfg.connect_uri) {
+            try {
+                const uri = new URL(String(cfg.connect_uri).replace('mongodb+srv://', 'https://').replace('mongodb://', 'https://'));
+                return {
+                    host: uri.hostname,
+                    port: parseInt(uri.port, 10) || 27017,
+                    database: uri.pathname.replace('/', '') || '',
+                    username: uri.username || '',
+                };
+            } catch { /* fall through */ }
+        }
+
+        return empty;
+    } catch {
+        return empty;
+    }
+}
+
+// Map cron interval → ScheduleFrequency
+function mapCronToFrequency(interval?: string): { frequency: ScheduleFrequency; cronExpression?: string } {
+    if (!interval) return { frequency: 'CUSTOM' };
+    const norm = interval.trim();
+
+    // Named intervals
+    if (norm === '@hourly') return { frequency: 'HOURLY' };
+    if (norm === '@daily' || norm === '@midnight') return { frequency: 'DAILY' };
+    if (norm === '@weekly') return { frequency: 'WEEKLY' };
+    if (norm === '@monthly') return { frequency: 'MONTHLY' };
+
+    const parts = norm.split(/\s+/);
+    if (parts.length === 5) {
+        const [, hour, dom, month, dow] = parts;
+        if (hour === '*' && dom === '*' && month === '*' && dow === '*') return { frequency: 'HOURLY' };
+        if (dom === '*' && month === '*' && dow === '*') return { frequency: 'DAILY' };
+        if (dom === '*' && month === '*') return { frequency: 'WEEKLY' };
+        if (month === '*' && dow === '*') return { frequency: 'MONTHLY' };
+    }
+
+    return { frequency: 'CUSTOM', cronExpression: norm };
+}
+
+// DataHub internal system source types that are auto-recreated on restart and cannot be permanently deleted
+// URN prefixes for DataHub internal system entities that should not appear in user-facing search
+const SYSTEM_ENTITY_URN_PREFIXES = [
+    'urn:li:document:',
+    'urn:li:domain:',
+    'urn:li:tag:',
+    'urn:li:container:',
+    'urn:li:glossaryTerm:',
+    'urn:li:glossaryNode:',
+    'urn:li:dataHubPolicy:',
+    'urn:li:dataHubRole:',
+    'urn:li:dataHubView:',
+    'urn:li:assertion:',
+    'urn:li:test:',
+];
+
+const SYSTEM_SOURCE_TYPES = new Set([
+    'datahub-gc',
+    'datahub-documents',
+    'datahub-business-attribute-definitions',
+    'datahub-lineage-summary',
+]);
+
+// Fetch all ingestion sources (raw) — used by both listIngestionSources and listIngestionSchedules
+async function fetchIngestionSources(): Promise<GmsIngestionSource[]> {
+    const data = await graphqlQuery<ListIngestionResponse>(LIST_INGESTION_SOURCES_QUERY, {
+        input: { start: 0, count: 100 },
+    });
+    return data.listIngestionSources.ingestionSources.filter(
+        (src) => !SYSTEM_SOURCE_TYPES.has(src.type.toLowerCase()),
+    );
+}
+
+export async function listIngestionSources(): Promise<ConnectionConfig[]> {
+    const sources = await fetchIngestionSources();
+    return sources.map((src) => {
+        const lastExec = src.executions?.executionRequests?.[0];
+        const connDetails = parseRecipe(src.config?.recipe, src.type);
+        return {
+            id: src.urn,
+            name: src.name,
+            type: mapIngestionType(src.type),
+            host: connDetails.host,
+            port: connDetails.port,
+            database: connDetails.database,
+            username: connDetails.username,
+            ssl: false,
+            status: mapExecStatus(lastExec),
+            lastTestedAt: lastExec?.result?.startTimeMs
+                ? new Date(lastExec.result.startTimeMs).toISOString()
+                : undefined,
+        };
+    });
+}
+
+export async function listIngestionSchedules(): Promise<AutoUpdateSchedule[]> {
+    const sources = await fetchIngestionSources();
+    return sources.map((src) => {
+        const lastExec = src.executions?.executionRequests?.[0];
+        const { frequency, cronExpression } = mapCronToFrequency(src.schedule?.interval);
+        const hasSchedule = !!src.schedule?.interval;
+
+        let lastRunStatus: AutoUpdateSchedule['lastRunStatus'];
+        const rawStatus = lastExec?.result?.status?.toUpperCase();
+        if (rawStatus === 'SUCCESS') lastRunStatus = 'SUCCESS';
+        else if (rawStatus === 'FAILURE' || rawStatus === 'FAILED') lastRunStatus = 'FAILED';
+        else if (rawStatus === 'RUNNING' || rawStatus === 'PENDING') lastRunStatus = 'RUNNING';
+
+        return {
+            id: src.urn,
+            connectionId: src.urn,
+            connectionName: src.name,
+            frequency,
+            cronExpression,
+            enabled: hasSchedule,
+            lastRunAt: lastExec?.result?.startTimeMs
+                ? new Date(lastExec.result.startTimeMs).toISOString()
+                : undefined,
+            lastRunStatus,
+            retainHistory: 30,
+        };
+    });
+}
+
+// Trigger an immediate ingestion run for the given source URN
+export async function runIngestionSource(ingestionSourceUrn: string): Promise<string> {
+    const data = await graphqlQuery<{ createIngestionExecutionRequest: string }>(
+        RUN_INGESTION_MUTATION,
+        { input: { ingestionSourceUrn } },
+    );
+    return data.createIngestionExecutionRequest;
+}
+
+// ---------------------------------------------------------------------------
+// Ingestion source mutations
+// ---------------------------------------------------------------------------
+
+const CREATE_INGESTION_SOURCE_MUTATION = `
+    mutation createIngestionSource($input: UpdateIngestionSourceInput!) {
+        createIngestionSource(input: $input)
+    }
+`;
+
+const UPDATE_INGESTION_SOURCE_MUTATION = `
+    mutation updateIngestionSource($urn: String!, $input: UpdateIngestionSourceInput!) {
+        updateIngestionSource(urn: $urn, input: $input)
+    }
+`;
+
+const DELETE_INGESTION_SOURCE_MUTATION = `
+    mutation deleteIngestionSource($urn: String!) {
+        deleteIngestionSource(urn: $urn)
+    }
+`;
+
+const CONNECTION_TYPE_TO_SOURCE_TYPE: Record<ConnectionType, string> = {
+    MYSQL: 'mysql',
+    POSTGRESQL: 'postgres',
+    ORACLE: 'oracle',
+    MSSQL: 'mssql',
+    MONGODB: 'mongodb',
+    KAFKA: 'kafka',
+    HIVE: 'hive',
+    SPARK: 'spark',
+    REST_API: 'openapi',
+    JDBC: 'jdbc',
+};
+
+export function frequencyToCron(frequency: ScheduleFrequency, cronExpression?: string): string {
+    if (frequency === 'CUSTOM') return cronExpression ?? '0 0 * * *';
+    const map: Record<Exclude<ScheduleFrequency, 'CUSTOM'>, string> = {
+        HOURLY: '0 * * * *',
+        DAILY: '0 0 * * *',
+        WEEKLY: '0 0 * * 0',
+        MONTHLY: '0 0 1 * *',
+    };
+    return map[frequency];
+}
+
+function buildRecipe(
+    type: ConnectionType,
+    host: string,
+    port: number,
+    database?: string,
+    username?: string,
+    password?: string,
+): string {
+    const sourceType = CONNECTION_TYPE_TO_SOURCE_TYPE[type];
+    const config: Record<string, unknown> = {};
+
+    if (type === 'KAFKA') {
+        config.connection = { bootstrap: `${host}:${port}` };
+    } else if (type === 'MONGODB') {
+        const auth = username ? `${username}${password ? `:${password}` : ''}@` : '';
+        config.connect_uri = `mongodb://${auth}${host}:${port}/${database ?? ''}`;
+    } else {
+        config.host_port = `${host}:${port}`;
+        if (database) config.database = database;
+        if (username) config.username = username;
+        if (password) config.password = password;
+    }
+
+    return JSON.stringify({
+        source: { type: sourceType, config },
+        sink: { type: 'datahub-rest', config: { server: 'http://datahub-gms:8080' } },
+    });
+}
+
+export async function createIngestionSource(values: {
+    name: string;
+    type: ConnectionType;
+    host: string;
+    port: number;
+    database?: string;
+    username?: string;
+    password?: string;
+}): Promise<string> {
+    const recipe = buildRecipe(values.type, values.host, values.port, values.database, values.username, values.password);
+    const data = await graphqlQuery<{ createIngestionSource: string }>(
+        CREATE_INGESTION_SOURCE_MUTATION,
+        {
+            input: {
+                name: values.name,
+                type: CONNECTION_TYPE_TO_SOURCE_TYPE[values.type],
+                config: { recipe, executorId: 'default' },
+            },
+        },
+    );
+    return data.createIngestionSource;
+}
+
+export async function updateIngestionSourceDetails(urn: string, values: {
+    name: string;
+    type: ConnectionType;
+    host: string;
+    port: number;
+    database?: string;
+    username?: string;
+    password?: string;
+}): Promise<void> {
+    const sources = await fetchIngestionSources();
+    const src = sources.find((s) => s.urn === urn);
+    const recipe = buildRecipe(values.type, values.host, values.port, values.database, values.username, values.password);
+
+    const input: Record<string, unknown> = {
+        name: values.name,
+        type: CONNECTION_TYPE_TO_SOURCE_TYPE[values.type],
+        config: { recipe, executorId: 'default' },
+    };
+    if (src?.schedule?.interval) {
+        input.schedule = {
+            interval: src.schedule.interval,
+            timezone: src.schedule.timezone ?? 'Asia/Ho_Chi_Minh',
+        };
+    }
+
+    await graphqlQuery(UPDATE_INGESTION_SOURCE_MUTATION, { urn, input });
+}
+
+export async function updateIngestionSourceSchedule(
+    urn: string,
+    enabled: boolean,
+    frequency: ScheduleFrequency,
+    cronExpression?: string,
+): Promise<void> {
+    const sources = await fetchIngestionSources();
+    const src = sources.find((s) => s.urn === urn);
+    if (!src) throw new Error(`Ingestion source not found: ${urn}`);
+
+    const input: Record<string, unknown> = {
+        name: src.name,
+        type: src.type,
+        config: { recipe: src.config?.recipe ?? '{}', executorId: 'default' },
+    };
+    if (enabled) {
+        input.schedule = {
+            interval: frequencyToCron(frequency, cronExpression),
+            timezone: src.schedule?.timezone ?? 'Asia/Ho_Chi_Minh',
+        };
+    }
+
+    await graphqlQuery(UPDATE_INGESTION_SOURCE_MUTATION, { urn, input });
+}
+
+export async function deleteIngestionSource(urn: string): Promise<void> {
+    await graphqlQuery<{ deleteIngestionSource: boolean }>(
+        DELETE_INGESTION_SOURCE_MUTATION,
+        { urn },
+    );
+}
+
 
 // ---------------------------------------------------------------------------
 // Metadata ingest (REST API via Play proxy → GMS)
@@ -244,7 +1063,6 @@ function buildMcp(
     };
 }
 
-// DataHub entity type strings used in MCP entityType field (lowercase camelCase)
 const GMS_ENTITY_TYPE: Record<string, string> = {
     DATASET: 'dataset',
     DASHBOARD: 'dashboard',
@@ -255,7 +1073,6 @@ const GMS_ENTITY_TYPE: Record<string, string> = {
     CORP_GROUP: 'corpGroup',
 };
 
-// DataHub aspect name for the "core properties" of each entity type
 const PROPS_ASPECT: Partial<Record<string, string>> = {
     DATASET: 'datasetProperties',
     DASHBOARD: 'dashboardInfo',
@@ -270,7 +1087,6 @@ export async function ingestMetadata(data: MetadataFormData): Promise<void> {
 
     const proposals: unknown[] = [];
 
-    // Core properties aspect
     const propsAspectName = PROPS_ASPECT[data.type] ?? null;
 
     if (propsAspectName) {
@@ -287,7 +1103,6 @@ export async function ingestMetadata(data: MetadataFormData): Promise<void> {
         );
     }
 
-    // Ownership aspect
     if (data.owner) {
         proposals.push(
             buildMcp(entityType, urn, 'ownership', {
@@ -304,20 +1119,30 @@ export async function ingestMetadata(data: MetadataFormData): Promise<void> {
         );
     }
 
-    // GlobalTags aspect
-    if (data.tags.length > 0) {
+    // Combine manually typed tags + selected project tag
+    const allTags = [...data.tags];
+    if (data.projectId && !allTags.includes(data.projectId)) {
+        allTags.push(data.projectId);
+    }
+    if (allTags.length > 0) {
         proposals.push(
             buildMcp(entityType, urn, 'globalTags', {
-                tags: data.tags.map((tag) => ({
-                    tag: tag.startsWith('urn:li:tag:')
-                        ? tag
-                        : `urn:li:tag:${tag}`,
+                tags: allTags.map((tag) => ({
+                    tag: tag.startsWith('urn:li:tag:') ? tag : `urn:li:tag:${tag}`,
                 })),
             }),
         );
     }
 
-    // SchemaMetadata aspect (only for datasets)
+    // Domain assignment (departmentId is a domain URN when using real data)
+    if (data.departmentId && data.departmentId.startsWith('urn:li:domain:')) {
+        proposals.push(
+            buildMcp(entityType, urn, 'domains', {
+                domains: [data.departmentId],
+            }),
+        );
+    }
+
     if (data.type === 'DATASET' && data.schemaFields && data.schemaFields.length > 0) {
         proposals.push(
             buildMcp(entityType, urn, 'schemaMetadata', {
@@ -338,7 +1163,6 @@ export async function ingestMetadata(data: MetadataFormData): Promise<void> {
         );
     }
 
-    // Submit all proposals in a single batch call
     await apiClient.post('/api/aspects?action=ingestProposalBatch', {
         proposals,
         async: false,

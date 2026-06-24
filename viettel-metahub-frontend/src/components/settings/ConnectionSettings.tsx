@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
     Table, Tag, Button, Space, Modal, Form, Input, Select, Switch,
     InputNumber, Badge, Tooltip, Typography, Divider, message,
@@ -11,7 +11,13 @@ import {
 import styled from 'styled-components';
 import type { ColumnsType } from 'antd/es/table';
 import type { ConnectionConfig, ConnectionType } from '../../types';
-import { mockConnections } from '../../api/mockData';
+import {
+    listIngestionSources,
+    createIngestionSource,
+    updateIngestionSourceDetails,
+    deleteIngestionSource,
+    runIngestionSource,
+} from '../../api/datahubApi';
 
 const { Option } = Select;
 const { Text } = Typography;
@@ -78,11 +84,23 @@ const DEFAULT_PORTS: Record<ConnectionType, number> = {
 type FormValues = Omit<ConnectionConfig, 'id' | 'status' | 'lastTestedAt'>;
 
 export default function ConnectionSettings() {
-    const [connections, setConnections] = useState<ConnectionConfig[]>(mockConnections);
+    const [connections, setConnections] = useState<ConnectionConfig[]>([]);
+    const [loadingInit, setLoadingInit] = useState(true);
     const [modalOpen, setModalOpen] = useState(false);
     const [editingConn, setEditingConn] = useState<ConnectionConfig | null>(null);
     const [testing, setTesting] = useState<string | null>(null);
+    const [saving, setSaving] = useState(false);
     const [form] = Form.useForm<FormValues>();
+
+    const reload = () => {
+        setLoadingInit(true);
+        listIngestionSources()
+            .then(setConnections)
+            .catch(() => setConnections([]))
+            .finally(() => setLoadingInit(false));
+    };
+
+    useEffect(() => { reload(); }, []);
 
     const openAdd = () => {
         setEditingConn(null);
@@ -99,57 +117,62 @@ export default function ConnectionSettings() {
 
     const handleSave = async () => {
         const values = await form.validateFields();
-        if (editingConn) {
-            setConnections((prev) =>
-                prev.map((c) => (c.id === editingConn.id ? { ...editingConn, ...values } : c)),
-            );
-            message.success('Đã cập nhật kết nối');
-        } else {
-            const newConn: ConnectionConfig = {
-                ...values,
-                id: `conn-${Date.now()}`,
-                status: 'DISCONNECTED',
-            };
-            setConnections((prev) => [...prev, newConn]);
-            message.success('Đã thêm kết nối mới');
+        setSaving(true);
+        try {
+            if (editingConn) {
+                await updateIngestionSourceDetails(editingConn.id, values);
+                message.success('Đã cập nhật kết nối');
+            } else {
+                await createIngestionSource(values);
+                message.success('Đã thêm kết nối mới');
+            }
+            setModalOpen(false);
+            reload();
+        } catch (err: unknown) {
+            message.error(`Lỗi: ${err instanceof Error ? err.message : 'Không xác định'}`);
+        } finally {
+            setSaving(false);
         }
-        setModalOpen(false);
     };
 
     const handleDelete = (id: string) => {
         Modal.confirm({
             title: 'Xác nhận xoá',
-            content: 'Bạn có chắc muốn xoá kết nối này không?',
+            content: 'Xoá ingestion source này khỏi DataHub. Thao tác không thể hoàn tác.',
             okText: 'Xoá',
             okButtonProps: { danger: true },
             cancelText: 'Huỷ',
-            onOk: () => {
-                setConnections((prev) => prev.filter((c) => c.id !== id));
-                message.success('Đã xoá kết nối');
+            onOk: async () => {
+                try {
+                    await deleteIngestionSource(id);
+                    message.success('Đã xoá kết nối');
+                    reload();
+                } catch (err: unknown) {
+                    message.error(`Lỗi khi xoá: ${err instanceof Error ? err.message : 'Không xác định'}`);
+                }
             },
         });
     };
 
-    const handleTest = (id: string) => {
+    const handleTest = async (id: string) => {
         setTesting(id);
         setConnections((prev) =>
             prev.map((c) => (c.id === id ? { ...c, status: 'TESTING' } : c)),
         );
-        setTimeout(() => {
-            const success = Math.random() > 0.3;
+        try {
+            await runIngestionSource(id);
+            message.info('Đã kích hoạt chạy thử — kết quả sẽ cập nhật sau vài giây');
+            setTimeout(() => {
+                reload();
+                setTesting(null);
+            }, 5000);
+        } catch (err: unknown) {
+            message.error(`Không thể kiểm tra: ${err instanceof Error ? err.message : 'Lỗi không xác định'}`);
             setConnections((prev) =>
-                prev.map((c) =>
-                    c.id === id
-                        ? { ...c, status: success ? 'CONNECTED' : 'ERROR', lastTestedAt: new Date().toISOString() }
-                        : c,
-                ),
+                prev.map((c) => (c.id === id ? { ...c, status: 'ERROR' } : c)),
             );
-            message.open({
-                type: success ? 'success' : 'error',
-                content: success ? 'Kết nối thành công!' : 'Kết nối thất bại. Vui lòng kiểm tra cấu hình.',
-            });
             setTesting(null);
-        }, 2000);
+        }
     };
 
     const columns: ColumnsType<ConnectionConfig> = [
@@ -166,7 +189,7 @@ export default function ConnectionSettings() {
                         </Text>
                         <br />
                         <Text type="secondary" style={{ fontSize: 11 }}>
-                            {record.host}:{record.port}
+                            {record.host ? `${record.host}:${record.port}` : 'DataHub ingestion source'}
                         </Text>
                     </div>
                 </Space>
@@ -266,7 +289,14 @@ export default function ConnectionSettings() {
             </PageHeader>
 
             <ConnectionCard>
-                <Table columns={columns} dataSource={connections} rowKey="id" size="middle" pagination={false} />
+                <Table
+                        columns={columns}
+                        dataSource={connections}
+                        rowKey="id"
+                        size="middle"
+                        pagination={false}
+                        loading={loadingInit}
+                    />
             </ConnectionCard>
 
             <Modal
@@ -276,7 +306,7 @@ export default function ConnectionSettings() {
                 onCancel={() => setModalOpen(false)}
                 okText="Lưu"
                 cancelText="Huỷ"
-                okButtonProps={{ style: { background: '#ee0033', borderColor: '#ee0033' } }}
+                okButtonProps={{ style: { background: '#ee0033', borderColor: '#ee0033' }, loading: saving }}
                 width={600}
             >
                 <Form form={form} layout="vertical" style={{ marginTop: 16 }}>

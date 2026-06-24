@@ -4,7 +4,6 @@ import {
     SearchOutlined,
     ApartmentOutlined,
     ApiOutlined,
-    FormOutlined,
     HomeOutlined,
     MenuFoldOutlined,
     MenuUnfoldOutlined,
@@ -98,11 +97,6 @@ const menuItems = [
         key: '/classification',
         icon: <ApartmentOutlined />,
         label: 'Phân loại dữ liệu',
-    },
-    {
-        key: '/metadata-input',
-        icon: <FormOutlined />,
-        label: 'Nhập Metadata',
     },
     {
         key: '/settings',

@@ -69,7 +69,7 @@ services:
   # ─── DataHub Actions ─────────────────────────────────────────────────────────
   datahub-actions:
     hostname: actions
-    image: ${DATAHUB_ACTIONS_IMAGE:-acryldata/datahub-actions}:${DATAHUB_VERSION:-head}-slim
+    image: ${DATAHUB_ACTIONS_IMAGE:-acryldata/datahub-actions}:${DATAHUB_VERSION:-head}
     environment:
       - ACTIONS_CONFIG=${ACTIONS_CONFIG:-}
       - ACTIONS_EXTRA_PACKAGES=${ACTIONS_EXTRA_PACKAGES:-}

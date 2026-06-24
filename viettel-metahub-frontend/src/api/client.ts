@@ -8,6 +8,16 @@ export const apiClient = axios.create({
     timeout: 30000,
 });
 
+// Attach Play CSRF token to every mutating request.
+// Play stores the token in the PLAY_CSRF_TOKEN cookie; we echo it as a header.
+apiClient.interceptors.request.use((config) => {
+    const match = document.cookie.match(/(?:^|;\s*)PLAY_CSRF_TOKEN=([^;]+)/);
+    if (match) {
+        config.headers['Csrf-Token'] = decodeURIComponent(match[1]);
+    }
+    return config;
+});
+
 apiClient.interceptors.response.use(
     (response) => response,
     (error) => {

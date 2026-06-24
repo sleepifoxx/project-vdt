@@ -1,16 +1,18 @@
-import React from 'react';
-import { Table, Tag, Badge, Typography, Space, Button, Tooltip, Empty } from 'antd';
+import React, { useState } from 'react';
+import { Table, Tag, Badge, Typography, Space, Button, Tooltip, Empty, Popconfirm, message } from 'antd';
 import {
     DatabaseOutlined,
     DashboardOutlined,
     BarChartOutlined,
     NodeIndexOutlined,
     EyeOutlined,
-    EditOutlined,
+    DeleteOutlined,
 } from '@ant-design/icons';
 import styled from 'styled-components';
 import type { ColumnsType } from 'antd/es/table';
 import type { MetadataEntity, EntityType } from '../../types';
+import { deleteEntity } from '../../api/datahubApi';
+import EntityDetailDrawer from './EntityDetailDrawer';
 
 const { Text, Link } = Typography;
 
@@ -87,10 +89,44 @@ type Props = {
     page: number;
     pageSize: number;
     onPageChange: (page: number, pageSize: number) => void;
-    onEdit?: (entity: MetadataEntity) => void;
+    onEntitiesChange: (entities: MetadataEntity[]) => void;
 };
 
-export default function SearchResults({ entities, total, loading, page, pageSize, onPageChange, onEdit }: Props) {
+export default function SearchResults({
+    entities,
+    total,
+    loading,
+    page,
+    pageSize,
+    onPageChange,
+    onEntitiesChange,
+}: Props) {
+    const [drawerEntity, setDrawerEntity] = useState<MetadataEntity | null>(null);
+    const [deletingUrns, setDeletingUrns] = useState<Set<string>>(new Set());
+
+    const handleDelete = async (record: MetadataEntity) => {
+        setDeletingUrns((prev) => new Set(prev).add(record.urn));
+        try {
+            await deleteEntity(record.urn);
+            onEntitiesChange(entities.filter((e) => e.urn !== record.urn));
+            message.success(`Đã xoá "${record.name}"`);
+            if (drawerEntity?.urn === record.urn) setDrawerEntity(null);
+        } catch {
+            message.error('Không thể xoá đối tượng');
+        } finally {
+            setDeletingUrns((prev) => {
+                const next = new Set(prev);
+                next.delete(record.urn);
+                return next;
+            });
+        }
+    };
+
+    const handleEntityUpdated = (updated: MetadataEntity) => {
+        onEntitiesChange(entities.map((e) => (e.urn === updated.urn ? updated : e)));
+        if (drawerEntity?.urn === updated.urn) setDrawerEntity(updated);
+    };
+
     const columns: ColumnsType<MetadataEntity> = [
         {
             title: 'Tên đối tượng',
@@ -101,7 +137,12 @@ export default function SearchResults({ entities, total, loading, page, pageSize
                 <Space>
                     {EntityIcon[record.type]}
                     <div>
-                        <Link style={{ color: '#EE0033', fontWeight: 600, fontSize: 13 }}>{name}</Link>
+                        <Link
+                            style={{ color: '#EE0033', fontWeight: 600, fontSize: 13, cursor: 'pointer' }}
+                            onClick={() => setDrawerEntity(record)}
+                        >
+                            {name}
+                        </Link>
                         <br />
                         <Text type="secondary" style={{ fontSize: 11 }}>
                             {record.urn}
@@ -140,18 +181,19 @@ export default function SearchResults({ entities, total, loading, page, pageSize
             ),
         },
         {
-            title: 'Phòng ban / Dự án',
-            key: 'department',
+            title: 'Domain',
+            key: 'domains',
             width: 180,
             render: (_, record) => (
                 <div>
-                    {record.department && (
-                        <Text style={{ fontSize: 12, display: 'block' }}>{record.department.name}</Text>
-                    )}
-                    {record.project && (
-                        <Text type="secondary" style={{ fontSize: 11 }}>
-                            {record.project.name}
-                        </Text>
+                    {(record.domains ?? []).length > 0 ? (
+                        (record.domains ?? []).map((d) => (
+                            <Tag key={d.urn} color="purple" style={{ fontSize: 11, marginBottom: 2 }}>
+                                {d.name}
+                            </Tag>
+                        ))
+                    ) : (
+                        <Text type="secondary">—</Text>
                     )}
                 </div>
             ),
@@ -201,54 +243,77 @@ export default function SearchResults({ entities, total, loading, page, pageSize
             render: (_, record) => (
                 <Space>
                     <Tooltip title="Xem chi tiết">
-                        <Button type="text" icon={<EyeOutlined />} size="small" />
-                    </Tooltip>
-                    <Tooltip title="Chỉnh sửa">
                         <Button
                             type="text"
-                            icon={<EditOutlined style={{ color: '#ee0033' }} />}
+                            icon={<EyeOutlined />}
                             size="small"
-                            onClick={() => onEdit?.(record)}
+                            onClick={() => setDrawerEntity(record)}
                         />
                     </Tooltip>
+                    <Popconfirm
+                        title="Xoá đối tượng"
+                        description={`Bạn có chắc muốn xoá "${record.name}"?`}
+                        onConfirm={() => handleDelete(record)}
+                        okText="Xoá"
+                        cancelText="Huỷ"
+                        okButtonProps={{ danger: true }}
+                    >
+                        <Tooltip title="Xoá">
+                            <Button
+                                type="text"
+                                icon={<DeleteOutlined style={{ color: '#ee0033' }} />}
+                                size="small"
+                                loading={deletingUrns.has(record.urn)}
+                            />
+                        </Tooltip>
+                    </Popconfirm>
                 </Space>
             ),
         },
     ];
 
     return (
-        <ResultsWrapper>
-            <ResultsHeader>
-                <ResultCount>
-                    Tìm thấy <strong>{total}</strong> kết quả
-                </ResultCount>
-            </ResultsHeader>
+        <>
+            <ResultsWrapper>
+                <ResultsHeader>
+                    <ResultCount>
+                        Tìm thấy <strong>{total}</strong> kết quả
+                    </ResultCount>
+                </ResultsHeader>
 
-            <Table
-                columns={columns}
-                dataSource={entities}
-                rowKey="urn"
-                loading={loading}
-                size="middle"
-                locale={{
-                    emptyText: (
-                        <Empty
-                            image={Empty.PRESENTED_IMAGE_SIMPLE}
-                            description="Không tìm thấy kết quả phù hợp"
-                        />
-                    ),
-                }}
-                pagination={{
-                    current: page,
-                    pageSize,
-                    total,
-                    onChange: onPageChange,
-                    showSizeChanger: true,
-                    showTotal: (tot) => `Tổng ${tot} kết quả`,
-                    pageSizeOptions: ['10', '20', '50'],
-                }}
-                scroll={{ x: 1000 }}
+                <Table
+                    columns={columns}
+                    dataSource={entities}
+                    rowKey="urn"
+                    loading={loading}
+                    size="middle"
+                    locale={{
+                        emptyText: (
+                            <Empty
+                                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                                description="Không tìm thấy kết quả phù hợp"
+                            />
+                        ),
+                    }}
+                    pagination={{
+                        current: page,
+                        pageSize,
+                        total,
+                        onChange: onPageChange,
+                        showSizeChanger: true,
+                        showTotal: (tot) => `Tổng ${tot} kết quả`,
+                        pageSizeOptions: ['10', '20', '50'],
+                    }}
+                    scroll={{ x: 1000 }}
+                />
+            </ResultsWrapper>
+
+            <EntityDetailDrawer
+                entity={drawerEntity}
+                open={drawerEntity !== null}
+                onClose={() => setDrawerEntity(null)}
+                onEntityUpdated={handleEntityUpdated}
             />
-        </ResultsWrapper>
+        </>
     );
 }

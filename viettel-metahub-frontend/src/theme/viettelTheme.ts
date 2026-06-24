@@ -39,7 +39,7 @@ export const viettelTheme = {
         colorLink: viettelColors.primary,
         colorLinkHover: viettelColors.primaryDark,
         borderRadius: 6,
-        fontFamily: "'Roboto', 'Segoe UI', sans-serif",
+        fontFamily: "'Be Vietnam Pro', 'Roboto', 'Segoe UI', sans-serif",
         colorBgContainer: viettelColors.white,
         colorBgLayout: viettelColors.gray100,
     },

@@ -1,3 +1,12 @@
+/* Global font & reset for Viettel MetaHub */
+
+:root {
+    --font-primary: 'Be Vietnam Pro', 'Roboto', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+}
+
 *,
 *::before,
 *::after {
@@ -7,20 +16,44 @@
 body {
     margin: 0;
     padding: 0;
-    font-family: 'Roboto', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
-    font-size: 14px;
-    line-height: 1.5;
-    color: #212121;
-    background: #f5f5f5;
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
+    font-family: var(--font-primary);
+    background-color: #f5f5f5;
 }
 
-#root {
-    min-height: 100vh;
+/* Override Ant Design font globally */
+.ant-typography,
+.ant-btn,
+.ant-input,
+.ant-select,
+.ant-table,
+.ant-menu,
+.ant-card,
+.ant-form,
+.ant-modal,
+.ant-tag,
+.ant-badge,
+.ant-statistic,
+.ant-list,
+.ant-tree,
+.ant-tabs,
+.ant-dropdown,
+.ant-pagination,
+.ant-tooltip,
+.ant-message,
+.ant-notification,
+.ant-breadcrumb,
+.ant-layout,
+.ant-alert,
+.ant-empty {
+    font-family: var(--font-primary) !important;
 }
 
-/* Viettel custom scrollbar */
+h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-primary);
+    font-weight: 700;
+}
+
+/* Smooth scrollbar */
 ::-webkit-scrollbar {
     width: 6px;
     height: 6px;
@@ -31,56 +64,10 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-    background: #bdbdbd;
+    background: #d0d0d0;
     border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-    background: #ee0033;
-}
-
-/* Ant Design overrides */
-.ant-input:hover,
-.ant-input:focus,
-.ant-input-focused {
-    border-color: #ee0033 !important;
-}
-
-.ant-input:focus,
-.ant-input-focused {
-    box-shadow: 0 0 0 2px rgba(238, 0, 51, 0.1) !important;
-}
-
-.ant-select:not(.ant-select-disabled):hover .ant-select-selector {
-    border-color: #ee0033 !important;
-}
-
-.ant-select-focused:not(.ant-select-disabled) .ant-select-selector {
-    border-color: #ee0033 !important;
-    box-shadow: 0 0 0 2px rgba(238, 0, 51, 0.1) !important;
-}
-
-.ant-checkbox-checked .ant-checkbox-inner {
-    background-color: #ee0033 !important;
-    border-color: #ee0033 !important;
-}
-
-.ant-tree-checkbox-checked .ant-tree-checkbox-inner {
-    background-color: #ee0033 !important;
-    border-color: #ee0033 !important;
-}
-
-/* Table row hover */
-.ant-table-tbody > tr.ant-table-row:hover > td {
-    background: #fff5f7 !important;
-}
-
-/* Loading spinner */
-.ant-spin-dot-item {
-    background-color: #ee0033 !important;
-}
-
-/* Switch checked */
-.ant-switch.ant-switch-checked {
-    background: #ee0033 !important;
+    background: #aaa;
 }

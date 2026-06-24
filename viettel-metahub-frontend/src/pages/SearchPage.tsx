@@ -43,8 +43,9 @@ export default function SearchPage() {
                 setTotal(result.total);
                 setHasSearched(true);
             } catch (err) {
-                message.error('Lỗi tìm kiếm. Vui lòng kiểm tra kết nối DataHub.');
-                console.error(err);
+                const msg = err instanceof Error ? err.message : String(err);
+                message.error(`Lỗi tìm kiếm: ${msg}`);
+                console.error('[SearchPage] search error:', err);
             } finally {
                 setLoading(false);
             }
@@ -81,6 +82,7 @@ export default function SearchPage() {
                         page={page}
                         pageSize={PAGE_SIZE}
                         onPageChange={handlePageChange}
+                        onEntitiesChange={setEntities}
                     />
                 )}
             </PageWrapper>

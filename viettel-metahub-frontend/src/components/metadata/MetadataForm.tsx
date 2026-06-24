@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
     Form, Input, Select, Button, Space, Tag, Divider, Typography,
     Table, Switch, message, Card, Row, Col, Tooltip, Alert,
@@ -8,9 +8,8 @@ import {
     InfoCircleOutlined,
 } from '@ant-design/icons';
 import styled from 'styled-components';
-import type { MetadataFormData, EntityType } from '../../types';
-import { mockDepartments, mockProjects } from '../../api/mockData';
-import { ingestMetadata } from '../../api/datahubApi';
+import type { MetadataFormData, EntityType, Department, Project } from '../../types';
+import { ingestMetadata, listDomains, getTagAggregations } from '../../api/datahubApi';
 
 const { Option } = Select;
 const { TextArea } = Input;
@@ -93,19 +92,17 @@ const SUB_TYPES: Record<EntityType, string[]> = {
 
 const NATIVE_TYPES = ['VARCHAR', 'INT', 'BIGINT', 'FLOAT', 'DOUBLE', 'BOOLEAN', 'DATE', 'TIMESTAMP', 'TEXT', 'JSON', 'ARRAY', 'MAP'];
 
-function flattenDepartments(depts: typeof mockDepartments): Array<{ id: string; name: string; level: number }> {
+function flattenDepartments(depts: Department[]): Array<{ id: string; name: string; level: number }> {
     const result: Array<{ id: string; name: string; level: number }> = [];
-    function traverse(list: typeof mockDepartments, level: number) {
+    function traverse(list: Department[], level: number) {
         list.forEach((d) => {
             result.push({ id: d.id, name: d.name, level });
-            if (d.children) traverse(d.children, level + 1);
+            if (d.children?.length) traverse(d.children, level + 1);
         });
     }
     traverse(depts, 0);
     return result;
 }
-
-const flatDepts = flattenDepartments(mockDepartments);
 
 type SchemaField = {
     fieldPath: string;
@@ -131,13 +128,19 @@ export default function MetadataForm({ initialValues, onSuccess }: Props) {
     const [tags, setTags] = useState<string[]>(initialValues?.tags ?? []);
     const [tagInput, setTagInput] = useState('');
     const [saving, setSaving] = useState(false);
+    const [flatDepts, setFlatDepts] = useState<Array<{ id: string; name: string; level: number }>>([]);
+    const [availableProjects, setAvailableProjects] = useState<Project[]>([]);
 
     const selectedType = Form.useWatch('type', form);
-    const selectedDept = Form.useWatch('departmentId', form);
 
-    const availableProjects = mockProjects.filter(
-        (p) => !selectedDept || p.departmentId === selectedDept,
-    );
+    useEffect(() => {
+        listDomains()
+            .then((domains) => setFlatDepts(flattenDepartments(domains)))
+            .catch(() => setFlatDepts([]));
+        getTagAggregations()
+            .then(setAvailableProjects)
+            .catch(() => setAvailableProjects([]));
+    }, []);
 
     const addSchemaField = () => {
         setSchemaFields((prev) => [
@@ -369,38 +372,37 @@ export default function MetadataForm({ initialValues, onSuccess }: Props) {
                     <Col span={12}>
                         <Form.Item
                             name="departmentId"
-                            label="Phòng ban"
-                            rules={[{ required: true, message: 'Vui lòng chọn phòng ban' }]}
+                            label="Domain / Lĩnh vực"
+                            rules={[{ required: true, message: 'Vui lòng chọn domain' }]}
                         >
                             <Select
-                                placeholder="Chọn phòng ban"
-                                onChange={() => form.setFieldValue('projectId', undefined)}
+                                placeholder={flatDepts.length === 0 ? 'Đang tải domain...' : 'Chọn domain'}
                                 showSearch
+                                allowClear
                                 filterOption={(input, option) =>
-                                    String(option?.children ?? '').toLowerCase().includes(input.toLowerCase())
+                                    String(option?.label ?? '').toLowerCase().includes(input.toLowerCase())
                                 }
-                            >
-                                {flatDepts.map((d) => (
-                                    <Option key={d.id} value={d.id}>
-                                        {'  '.repeat(d.level)}{d.name}
-                                    </Option>
-                                ))}
-                            </Select>
+                                options={flatDepts.map((d) => ({
+                                    value: d.id,
+                                    label: ' '.repeat(d.level * 2) + d.name,
+                                }))}
+                            />
                         </Form.Item>
                     </Col>
                     <Col span={12}>
-                        <Form.Item name="projectId" label="Dự án">
+                        <Form.Item name="projectId" label="Tag / Nhãn dự án">
                             <Select
-                                placeholder="Chọn dự án (tuỳ chọn)"
+                                placeholder="Chọn tag (tuỳ chọn)"
                                 allowClear
-                                disabled={availableProjects.length === 0}
-                            >
-                                {availableProjects.map((p) => (
-                                    <Option key={p.id} value={p.id}>
-                                        {p.name}
-                                    </Option>
-                                ))}
-                            </Select>
+                                showSearch
+                                filterOption={(input, option) =>
+                                    String(option?.label ?? '').toLowerCase().includes(input.toLowerCase())
+                                }
+                                options={availableProjects.map((p) => ({
+                                    value: p.id,
+                                    label: p.name,
+                                }))}
+                            />
                         </Form.Item>
                     </Col>
                 </Row>

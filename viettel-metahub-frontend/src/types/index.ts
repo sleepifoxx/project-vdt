@@ -40,6 +40,7 @@ export interface MetadataEntity {
     project?: Project;
     owner?: string;
     tags: string[];
+    domains?: Array<{ urn: string; name: string }>;
     status: MetadataStatus;
     lastUpdated: string;
     createdAt: string;

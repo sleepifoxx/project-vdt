@@ -1,14 +1,21 @@
 import React, { useEffect, useState } from 'react';
-import { Row, Col, Card, Statistic, Typography, Space, Tag, Progress, List, Avatar, Badge } from 'antd';
+import { Row, Col, Card, Statistic, Typography, Space, Tag, Progress, List, Avatar } from 'antd';
 import {
     DatabaseOutlined, DashboardOutlined, TeamOutlined, ApiOutlined,
     RiseOutlined, CheckCircleOutlined, SyncOutlined, WarningOutlined,
+    FileTextOutlined,
 } from '@ant-design/icons';
 import styled from 'styled-components';
 import { useNavigate } from 'react-router-dom';
+import dayjs from 'dayjs';
+import relativeTime from 'dayjs/plugin/relativeTime';
+import 'dayjs/locale/vi';
 import AppLayout from '../components/layout/AppLayout';
-import type { EntityType } from '../types';
-import { getEntityCount } from '../api/datahubApi';
+import type { EntityType, MetadataEntity } from '../types';
+import { getEntityCount, getPlatformAggregations, searchEntities } from '../api/datahubApi';
+
+dayjs.extend(relativeTime);
+dayjs.locale('vi');
 
 const { Title, Text } = Typography;
 
@@ -84,11 +91,11 @@ const StatCard = styled(Card)`
     }
 `;
 
-const IconWrapper = styled.div<{ color: string }>`
+const IconWrapper = styled.div<{ $color: string }>`
     width: 44px;
     height: 44px;
     border-radius: 10px;
-    background: ${({ color }) => color};
+    background: ${({ $color }) => $color};
     display: flex;
     align-items: center;
     justify-content: center;
@@ -119,36 +126,62 @@ const STAT_DEFS: Array<{
     icon: React.ReactNode;
     color: string;
     iconColor: string;
-    suffix: string;
 }> = [
-    { title: 'Tổng Metadata', types: ['DATASET', 'DASHBOARD', 'CHART', 'DATA_FLOW', 'DATA_JOB'], icon: <DatabaseOutlined />, color: '#fff0f3', iconColor: '#ee0033', suffix: '' },
-    { title: 'Dashboard', types: ['DASHBOARD'], icon: <DashboardOutlined />, color: '#f0f5ff', iconColor: '#1677ff', suffix: '' },
-    { title: 'Datasets', types: ['DATASET'], icon: <ApiOutlined />, color: '#f6ffed', iconColor: '#52c41a', suffix: '' },
-    { title: 'Người dùng', types: ['CORP_USER'], icon: <TeamOutlined />, color: '#fff7e6', iconColor: '#fa8c16', suffix: '' },
+    {
+        title: 'Tổng Metadata',
+        types: ['DATASET', 'DASHBOARD', 'CHART', 'DATA_FLOW', 'DATA_JOB'],
+        icon: <DatabaseOutlined />,
+        color: '#fff0f3',
+        iconColor: '#ee0033',
+    },
+    {
+        title: 'Dashboard',
+        types: ['DASHBOARD'],
+        icon: <DashboardOutlined />,
+        color: '#f0f5ff',
+        iconColor: '#1677ff',
+    },
+    {
+        title: 'Datasets',
+        types: ['DATASET'],
+        icon: <ApiOutlined />,
+        color: '#f6ffed',
+        iconColor: '#52c41a',
+    },
+    {
+        title: 'Người dùng',
+        types: ['CORP_USER'],
+        icon: <TeamOutlined />,
+        color: '#fff7e6',
+        iconColor: '#fa8c16',
+    },
 ];
 
-const recentActivities = [
-    { text: 'khach_hang được cập nhật metadata', time: '5 phút trước', type: 'success' },
-    { text: 'Thêm kết nối PostgreSQL Analytics mới', time: '1 giờ trước', type: 'info' },
-    { text: 'Lịch cập nhật MySQL DWH chạy thành công', time: '2 giờ trước', type: 'success' },
-    { text: 'Dashboard KPI Tháng được tạo', time: '3 giờ trước', type: 'info' },
-    { text: 'Kết nối Oracle Legacy DB gặp lỗi', time: '5 giờ trước', type: 'error' },
-];
+type PlatformStat = { name: string; count: number; percent: number };
 
-const platformCoverage = [
-    { name: 'MySQL', count: 340, percent: 27 },
-    { name: 'PostgreSQL', count: 280, percent: 22 },
-    { name: 'Hive', count: 215, percent: 17 },
-    { name: 'Kafka', count: 178, percent: 14 },
-    { name: 'Oracle', count: 134, percent: 11 },
-    { name: 'Khác', count: 100, percent: 9 },
-];
+function entityToActivity(entity: MetadataEntity): {
+    text: string;
+    time: string;
+    type: 'success' | 'info' | 'error';
+} {
+    const name = entity.name || entity.urn;
+    const timeAgo = dayjs(entity.lastUpdated).fromNow();
+    return {
+        text: `${name} được cập nhật metadata`,
+        time: timeAgo,
+        type: 'success',
+    };
+}
 
 export default function HomePage() {
     const navigate = useNavigate();
     const [statValues, setStatValues] = useState<number[]>(STAT_DEFS.map(() => 0));
+    const [platformStats, setPlatformStats] = useState<PlatformStat[]>([]);
+    const [recentEntities, setRecentEntities] = useState<MetadataEntity[]>([]);
+    const [platformTotal, setPlatformTotal] = useState(0);
 
     useEffect(() => {
+        // Load entity counts
         STAT_DEFS.forEach((def, idx) => {
             getEntityCount(def.types)
                 .then((count) => {
@@ -160,12 +193,27 @@ export default function HomePage() {
                 })
                 .catch(() => {/* keep 0 on error */});
         });
+
+        // Load platform aggregations
+        getPlatformAggregations()
+            .then((stats) => {
+                setPlatformStats(stats);
+                setPlatformTotal(stats.reduce((s, p) => s + p.count, 0));
+            })
+            .catch(() => {/* keep empty on error */});
+
+        // Load recently updated entities (top 5)
+        searchEntities({ query: '*', types: ['DATASET', 'DASHBOARD', 'CHART'], count: 5 })
+            .then((result) => setRecentEntities(result.entities))
+            .catch(() => {/* keep empty on error */});
     }, []);
 
     const stats = STAT_DEFS.map((def, idx) => ({
         ...def,
         value: statValues[idx],
     }));
+
+    const activities = recentEntities.map(entityToActivity);
 
     return (
         <AppLayout pageTitle="Tổng quan">
@@ -176,10 +224,24 @@ export default function HomePage() {
                         Nền tảng quản lý và khám phá metadata tập trung — Hỗ trợ quản trị dữ liệu toàn Tổng Công ty
                     </WelcomeSub>
                     <Space style={{ marginTop: 20 }} size={16}>
-                        <Tag color="rgba(255,255,255,0.25)" style={{ color: 'white', border: '1px solid rgba(255,255,255,0.4)', borderRadius: 6 }}>
-                            <CheckCircleOutlined /> Cập nhật lần cuối: 12/06/2024
+                        <Tag
+                            color="rgba(255,255,255,0.25)"
+                            style={{
+                                color: 'white',
+                                border: '1px solid rgba(255,255,255,0.4)',
+                                borderRadius: 6,
+                            }}
+                        >
+                            <CheckCircleOutlined /> Dữ liệu thời gian thực
                         </Tag>
-                        <Tag color="rgba(255,255,255,0.25)" style={{ color: 'white', border: '1px solid rgba(255,255,255,0.4)', borderRadius: 6 }}>
+                        <Tag
+                            color="rgba(255,255,255,0.25)"
+                            style={{
+                                color: 'white',
+                                border: '1px solid rgba(255,255,255,0.4)',
+                                borderRadius: 6,
+                            }}
+                        >
                             <SyncOutlined spin /> Đồng bộ hoạt động
                         </Tag>
                     </Space>
@@ -192,16 +254,17 @@ export default function HomePage() {
                                 onClick={() => idx === 0 && navigate('/search')}
                                 hoverable={idx === 0}
                             >
-                                <IconWrapper color={stat.color}>
+                                <IconWrapper $color={stat.color}>
                                     <span style={{ color: stat.iconColor }}>{stat.icon}</span>
                                 </IconWrapper>
                                 <Statistic
                                     title={stat.title}
                                     value={stat.value}
-                                    suffix={<Text type="secondary" style={{ fontSize: 14 }}>{stat.suffix}</Text>}
                                     prefix={
                                         idx === 0 ? (
-                                            <RiseOutlined style={{ color: '#52c41a', fontSize: 14, marginRight: 4 }} />
+                                            <RiseOutlined
+                                                style={{ color: '#52c41a', fontSize: 14, marginRight: 4 }}
+                                            />
                                         ) : undefined
                                     }
                                 />
@@ -214,72 +277,118 @@ export default function HomePage() {
                     <Col xs={24} lg={14}>
                         <SectionCard
                             title="Phân bổ theo nền tảng"
-                            extra={<Text type="secondary" style={{ fontSize: 12 }}>Tổng 1,247 đối tượng</Text>}
+                            extra={
+                                platformTotal > 0 ? (
+                                    <Text type="secondary" style={{ fontSize: 12 }}>
+                                        Tổng {platformTotal.toLocaleString('vi-VN')} đối tượng
+                                    </Text>
+                                ) : null
+                            }
                         >
-                            <Space direction="vertical" style={{ width: '100%' }} size={14}>
-                                {platformCoverage.map((platform) => (
-                                    <div key={platform.name}>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                                            <Text style={{ fontSize: 13, fontWeight: 500 }}>{platform.name}</Text>
-                                            <Text type="secondary" style={{ fontSize: 12 }}>
-                                                {platform.count} ({platform.percent}%)
-                                            </Text>
+                            {platformStats.length === 0 ? (
+                                <div style={{ textAlign: 'center', padding: '24px 0', color: '#9e9e9e', fontSize: 13 }}>
+                                    Chưa có dữ liệu nền tảng
+                                </div>
+                            ) : (
+                                <Space direction="vertical" style={{ width: '100%' }} size={14}>
+                                    {platformStats.map((platform) => (
+                                        <div key={platform.name}>
+                                            <div
+                                                style={{
+                                                    display: 'flex',
+                                                    justifyContent: 'space-between',
+                                                    marginBottom: 4,
+                                                }}
+                                            >
+                                                <Text style={{ fontSize: 13, fontWeight: 500 }}>
+                                                    {platform.name}
+                                                </Text>
+                                                <Text type="secondary" style={{ fontSize: 12 }}>
+                                                    {platform.count.toLocaleString('vi-VN')} ({platform.percent}%)
+                                                </Text>
+                                            </div>
+                                            <Progress
+                                                percent={platform.percent}
+                                                strokeColor="#ee0033"
+                                                trailColor="#f5f5f5"
+                                                showInfo={false}
+                                                size="small"
+                                            />
                                         </div>
-                                        <Progress
-                                            percent={platform.percent}
-                                            strokeColor="#ee0033"
-                                            trailColor="#f5f5f5"
-                                            showInfo={false}
-                                            size="small"
-                                        />
-                                    </div>
-                                ))}
-                            </Space>
+                                    ))}
+                                </Space>
+                            )}
                         </SectionCard>
                     </Col>
 
                     <Col xs={24} lg={10}>
                         <SectionCard title="Hoạt động gần đây">
-                            <List
-                                size="small"
-                                dataSource={recentActivities}
-                                renderItem={(item) => (
-                                    <List.Item style={{ padding: '8px 0', borderBottom: '1px solid #f9f9f9' }}>
-                                        <List.Item.Meta
-                                            avatar={
-                                                <Avatar
-                                                    size={28}
-                                                    style={{
-                                                        background:
-                                                            item.type === 'success'
-                                                                ? '#f6ffed'
-                                                                : item.type === 'error'
-                                                                  ? '#fff2f0'
-                                                                  : '#e6f4ff',
-                                                        fontSize: 14,
-                                                    }}
-                                                >
-                                                    {item.type === 'success' ? (
-                                                        <CheckCircleOutlined style={{ color: '#52c41a' }} />
-                                                    ) : item.type === 'error' ? (
-                                                        <WarningOutlined style={{ color: '#ff4d4f' }} />
-                                                    ) : (
-                                                        <SyncOutlined style={{ color: '#1677ff' }} />
-                                                    )}
-                                                </Avatar>
-                                            }
-                                            title={
-                                                <Text style={{ fontSize: 12, fontWeight: 500 }}>{item.text}</Text>
-                                            }
-                                            description={
-                                                <Text type="secondary" style={{ fontSize: 11 }}>
-                                                    {item.time}
-                                                </Text>
-                                            }
-                                        />
-                                    </List.Item>
-                                )}
-                            />
+                            {activities.length === 0 ? (
+                                <div
+                                    style={{
+                                        textAlign: 'center',
+                                        padding: '24px 0',
+                                        color: '#9e9e9e',
+                                        fontSize: 13,
+                                    }}
+                                >
+                                    Chưa có hoạt động gần đây
+                                </div>
+                            ) : (
+                                <List
+                                    size="small"
+                                    dataSource={activities}
+                                    renderItem={(item) => (
+                                        <List.Item
+                                            style={{
+                                                padding: '8px 0',
+                                                borderBottom: '1px solid #f9f9f9',
+                                            }}
+                                        >
+                                            <List.Item.Meta
+                                                avatar={
+                                                    <Avatar
+                                                        size={28}
+                                                        style={{
+                                                            background:
+                                                                item.type === 'success'
+                                                                    ? '#f6ffed'
+                                                                    : item.type === 'error'
+                                                                      ? '#fff2f0'
+                                                                      : '#e6f4ff',
+                                                            fontSize: 14,
+                                                        }}
+                                                    >
+                                                        {item.type === 'success' ? (
+                                                            <CheckCircleOutlined
+                                                                style={{ color: '#52c41a' }}
+                                                            />
+                                                        ) : item.type === 'error' ? (
+                                                            <WarningOutlined
+                                                                style={{ color: '#ff4d4f' }}
+                                                            />
+                                                        ) : (
+                                                            <FileTextOutlined
+                                                                style={{ color: '#1677ff' }}
+                                                            />
+                                                        )}
+                                                    </Avatar>
+                                                }
+                                                title={
+                                                    <Text style={{ fontSize: 12, fontWeight: 500 }}>
+                                                        {item.text}
+                                                    </Text>
+                                                }
+                                                description={
+                                                    <Text type="secondary" style={{ fontSize: 11 }}>
+                                                        {item.time}
+                                                    </Text>
+                                                }
+                                            />
+                                        </List.Item>
+                                    )}
+                                />
+                            )}
                         </SectionCard>
                     </Col>
                 </Row>
