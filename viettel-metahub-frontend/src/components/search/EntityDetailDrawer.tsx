@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import {
     Modal, Tabs, Tag, Typography, Space, Spin, Empty, Table, Badge,
-    Button, Select, Tooltip, message,
+    Button, Select, Tooltip, message, Input,
 } from 'antd';
 import {
     DatabaseOutlined, DashboardOutlined, BarChartOutlined, NodeIndexOutlined,
-    CopyOutlined, PlusOutlined,
+    CopyOutlined, PlusOutlined, EditOutlined, CheckOutlined, CloseOutlined,
 } from '@ant-design/icons';
 import styled from 'styled-components';
 import type { ColumnsType } from 'antd/es/table';
@@ -13,6 +13,7 @@ import type { MetadataEntity, EntityType, Department, Project } from '../../type
 import {
     fetchDatasetSchema, listDomains, getTagAggregations,
     updateEntityDomains, updateEntityTags, removeEntityTag, refetchEntityMeta,
+    updateEntityDescription, updateDatasetFieldDescription, getPlatformNameMap,
 } from '../../api/datahubApi';
 import type { SchemaField } from '../../api/datahubApi';
 
@@ -96,6 +97,17 @@ const AddButton = styled(Button)`
     border-style: dashed !important;
 `;
 
+const DescriptionBlock = styled.div`
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    margin-bottom: 0;
+`;
+
+const DescriptionEditActions = styled(Space)`
+    margin-top: 6px;
+`;
+
 const ENTITY_ICON: Record<EntityType, React.ReactNode> = {
     DATASET: <DatabaseOutlined style={{ color: '#1677ff' }} />,
     DASHBOARD: <DashboardOutlined style={{ color: '#722ed1' }} />,
@@ -145,6 +157,12 @@ export default function EntityDetailDrawer({ entity, open, onClose, onEntityUpda
     const [addingDomain, setAddingDomain] = useState(false);
     const [addingTag, setAddingTag] = useState(false);
     const [activeTab, setActiveTab] = useState('overview');
+    const [editingDescription, setEditingDescription] = useState(false);
+    const [descriptionDraft, setDescriptionDraft] = useState('');
+    const [editingFieldPath, setEditingFieldPath] = useState<string | null>(null);
+    const [fieldDescDraft, setFieldDescDraft] = useState('');
+    const [savingField, setSavingField] = useState(false);
+    const [platformNameMap, setPlatformNameMap] = useState<Record<string, string>>({});
 
     useEffect(() => {
         if (open && entity) {
@@ -152,6 +170,7 @@ export default function EntityDetailDrawer({ entity, open, onClose, onEntityUpda
             setActiveTab('overview');
             listDomains().then(setAvailableDomains).catch(() => {});
             getTagAggregations().then(setAvailableTags).catch(() => {});
+            getPlatformNameMap().then(setPlatformNameMap).catch(() => {});
         }
     }, [open, entity]);
 
@@ -254,6 +273,57 @@ export default function EntityDetailDrawer({ entity, open, onClose, onEntityUpda
         });
     };
 
+    const handleSaveDescription = async () => {
+        if (!localEntity) return;
+        await withSaving(async () => {
+            try {
+                await updateEntityDescription(localEntity.urn, descriptionDraft);
+                applyUpdate((e) => ({ ...e, description: descriptionDraft }));
+                setEditingDescription(false);
+            } catch {
+                message.error('Không thể cập nhật mô tả');
+            }
+        });
+    };
+
+    const handleStartEditDescription = () => {
+        setDescriptionDraft(localEntity?.description ?? '');
+        setEditingDescription(true);
+    };
+
+    const handleCancelEditDescription = () => {
+        setEditingDescription(false);
+        setDescriptionDraft('');
+    };
+
+    const handleStartEditField = (field: SchemaField) => {
+        setEditingFieldPath(field.fieldPath);
+        setFieldDescDraft(field.description ?? '');
+    };
+
+    const handleSaveFieldDescription = async () => {
+        if (!localEntity || !editingFieldPath) return;
+        setSavingField(true);
+        try {
+            await updateDatasetFieldDescription(localEntity.urn, editingFieldPath, fieldDescDraft);
+            setSchemaFields((prev) =>
+                prev.map((f) =>
+                    f.fieldPath === editingFieldPath ? { ...f, description: fieldDescDraft } : f,
+                ),
+            );
+            setEditingFieldPath(null);
+        } catch {
+            message.error('Không thể cập nhật mô tả trường');
+        } finally {
+            setSavingField(false);
+        }
+    };
+
+    const handleCancelEditField = () => {
+        setEditingFieldPath(null);
+        setFieldDescDraft('');
+    };
+
     const copyUrn = () => {
         if (!localEntity) return;
         navigator.clipboard.writeText(localEntity.urn).then(() => message.success('Đã sao chép URN'));
@@ -287,8 +357,52 @@ export default function EntityDetailDrawer({ entity, open, onClose, onEntityUpda
             title: 'Mô tả',
             dataIndex: 'description',
             key: 'description',
-            ellipsis: true,
-            render: (v: string) => <Text style={{ fontSize: 12, color: '#616161' }}>{v || '—'}</Text>,
+            render: (v: string, record: SchemaField) => {
+                if (editingFieldPath === record.fieldPath) {
+                    return (
+                        <Space.Compact style={{ width: '100%' }}>
+                            <Input
+                                autoFocus
+                                size="small"
+                                value={fieldDescDraft}
+                                onChange={(e) => setFieldDescDraft(e.target.value)}
+                                onPressEnter={handleSaveFieldDescription}
+                                style={{ fontSize: 12 }}
+                                placeholder="Nhập mô tả..."
+                            />
+                            <Tooltip title="Lưu">
+                                <Button
+                                    size="small"
+                                    icon={<CheckOutlined />}
+                                    loading={savingField}
+                                    onClick={handleSaveFieldDescription}
+                                />
+                            </Tooltip>
+                            <Tooltip title="Huỷ">
+                                <Button
+                                    size="small"
+                                    icon={<CloseOutlined />}
+                                    onClick={handleCancelEditField}
+                                />
+                            </Tooltip>
+                        </Space.Compact>
+                    );
+                }
+                return (
+                    <Space style={{ width: '100%' }}>
+                        <Text style={{ fontSize: 12, color: v ? '#616161' : '#bdbdbd' }}>{v || '—'}</Text>
+                        <Tooltip title="Chỉnh sửa mô tả">
+                            <Button
+                                type="text"
+                                size="small"
+                                icon={<EditOutlined />}
+                                style={{ color: '#bdbdbd', padding: '0 2px' }}
+                                onClick={() => handleStartEditField(record)}
+                            />
+                        </Tooltip>
+                    </Space>
+                );
+            },
         },
         {
             title: 'PK',
@@ -313,8 +427,8 @@ export default function EntityDetailDrawer({ entity, open, onClose, onEntityUpda
             <SectionLabel>Thông tin chung</SectionLabel>
             <InfoRow>
                 <InfoLabel>Nền tảng</InfoLabel>
-                <Tag style={{ fontWeight: 600, textTransform: 'uppercase', fontSize: 11 }}>
-                    {localEntity.platform || '—'}
+                <Tag style={{ fontWeight: 600, fontSize: 11 }}>
+                    {(platformNameMap[localEntity.platform] ?? localEntity.platform.toUpperCase()) || '—'}
                 </Tag>
             </InfoRow>
             <InfoRow>
@@ -329,13 +443,47 @@ export default function EntityDetailDrawer({ entity, open, onClose, onEntityUpda
                 />
             </InfoRow>
 
-            {localEntity.description && (
-                <>
-                    <SectionLabel>Mô tả</SectionLabel>
-                    <Paragraph style={{ fontSize: 13, color: '#424242', marginBottom: 0 }}>
-                        {localEntity.description}
+            <SectionLabel>Mô tả</SectionLabel>
+            {editingDescription ? (
+                <div>
+                    <Input.TextArea
+                        autoFocus
+                        value={descriptionDraft}
+                        onChange={(e) => setDescriptionDraft(e.target.value)}
+                        rows={3}
+                        style={{ fontSize: 13 }}
+                        placeholder="Nhập mô tả..."
+                    />
+                    <DescriptionEditActions size={4} style={{ marginTop: 6 }}>
+                        <Button
+                            type="primary"
+                            size="small"
+                            icon={<CheckOutlined />}
+                            loading={saving}
+                            onClick={handleSaveDescription}
+                        >
+                            Lưu
+                        </Button>
+                        <Button size="small" icon={<CloseOutlined />} onClick={handleCancelEditDescription}>
+                            Huỷ
+                        </Button>
+                    </DescriptionEditActions>
+                </div>
+            ) : (
+                <DescriptionBlock>
+                    <Paragraph style={{ fontSize: 13, color: localEntity.description ? '#424242' : '#bdbdbd', marginBottom: 0, flex: 1 }}>
+                        {localEntity.description || 'Chưa có mô tả'}
                     </Paragraph>
-                </>
+                    <Tooltip title="Chỉnh sửa mô tả">
+                        <Button
+                            type="text"
+                            size="small"
+                            icon={<EditOutlined />}
+                            style={{ color: '#9e9e9e', flexShrink: 0 }}
+                            onClick={handleStartEditDescription}
+                        />
+                    </Tooltip>
+                </DescriptionBlock>
             )}
 
             <SectionLabel>Domain</SectionLabel>
@@ -487,8 +635,8 @@ export default function EntityDetailDrawer({ entity, open, onClose, onEntityUpda
                                     {ENTITY_TYPE_LABEL[localEntity.type]}
                                 </Tag>
                                 {localEntity.platform && (
-                                    <Tag style={{ fontSize: 11, margin: 0, textTransform: 'uppercase', fontWeight: 600 }}>
-                                        {localEntity.platform}
+                                    <Tag style={{ fontSize: 11, margin: 0, fontWeight: 600 }}>
+                                        {platformNameMap[localEntity.platform] ?? localEntity.platform.toUpperCase()}
                                     </Tag>
                                 )}
                             </Space>

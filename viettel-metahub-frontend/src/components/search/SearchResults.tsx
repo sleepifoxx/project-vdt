@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Table, Tag, Badge, Typography, Space, Button, Tooltip, Empty, Popconfirm, message } from 'antd';
 import {
     DatabaseOutlined,
@@ -11,7 +11,7 @@ import {
 import styled from 'styled-components';
 import type { ColumnsType } from 'antd/es/table';
 import type { MetadataEntity, EntityType } from '../../types';
-import { deleteEntity } from '../../api/datahubApi';
+import { deleteEntity, getPlatformNameMap } from '../../api/datahubApi';
 import EntityDetailDrawer from './EntityDetailDrawer';
 
 const { Text, Link } = Typography;
@@ -103,6 +103,11 @@ export default function SearchResults({
 }: Props) {
     const [drawerEntity, setDrawerEntity] = useState<MetadataEntity | null>(null);
     const [deletingUrns, setDeletingUrns] = useState<Set<string>>(new Set());
+    const [platformNameMap, setPlatformNameMap] = useState<Record<string, string>>({});
+
+    useEffect(() => {
+        getPlatformNameMap().then(setPlatformNameMap).catch(() => {});
+    }, []);
 
     const handleDelete = async (record: MetadataEntity) => {
         setDeletingUrns((prev) => new Set(prev).add(record.urn));
@@ -143,10 +148,6 @@ export default function SearchResults({
                         >
                             {name}
                         </Link>
-                        <br />
-                        <Text type="secondary" style={{ fontSize: 11 }}>
-                            {record.urn}
-                        </Text>
                     </div>
                 </Space>
             ),
@@ -167,7 +168,9 @@ export default function SearchResults({
             dataIndex: 'platform',
             key: 'platform',
             width: 100,
-            render: (platform: string) => <PlatformBadge>{platform}</PlatformBadge>,
+            render: (platform: string) => (
+                <PlatformBadge>{platformNameMap[platform] ?? platform}</PlatformBadge>
+            ),
         },
         {
             title: 'Mô tả',

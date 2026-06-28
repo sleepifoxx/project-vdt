@@ -191,6 +191,8 @@ export async function searchEntities(params: {
     platforms?: string[];
     domainUrns?: string[];
     tagUrns?: string[];
+    startDate?: number;
+    endDate?: number;
     start?: number;
     count?: number;
 }): Promise<{ entities: MetadataEntity[]; total: number }> {
@@ -225,6 +227,22 @@ export async function searchEntities(params: {
         andFilters.push({
             field: 'tags',
             values: params.tagUrns,
+        });
+    }
+
+    if (params.startDate) {
+        andFilters.push({
+            field: 'lastModifiedAt',
+            values: [String(params.startDate)],
+            condition: 'GREATER_THAN_OR_EQUAL_TO',
+        });
+    }
+
+    if (params.endDate) {
+        andFilters.push({
+            field: 'lastModifiedAt',
+            values: [String(params.endDate)],
+            condition: 'LESS_THAN_OR_EQUAL_TO',
         });
     }
 
@@ -581,6 +599,12 @@ const DATASET_SCHEMA_QUERY = `
                     isPartOfKey
                 }
             }
+            editableSchemaMetadata {
+                editableSchemaFieldInfo {
+                    fieldPath
+                    description
+                }
+            }
         }
     }
 `;
@@ -594,12 +618,57 @@ export type SchemaField = {
 };
 
 type DatasetSchemaResponse = {
-    dataset: { schemaMetadata?: { fields: SchemaField[] } } | null;
+    dataset: {
+        schemaMetadata?: { fields: SchemaField[] };
+        editableSchemaMetadata?: {
+            editableSchemaFieldInfo: Array<{ fieldPath: string; description?: string }>;
+        };
+    } | null;
 };
 
 export async function fetchDatasetSchema(urn: string): Promise<SchemaField[]> {
     const data = await graphqlQuery<DatasetSchemaResponse>(DATASET_SCHEMA_QUERY, { urn });
-    return data.dataset?.schemaMetadata?.fields ?? [];
+    const fields = data.dataset?.schemaMetadata?.fields ?? [];
+    const editableMap = new Map(
+        (data.dataset?.editableSchemaMetadata?.editableSchemaFieldInfo ?? []).map(
+            (f) => [f.fieldPath, f.description],
+        ),
+    );
+    return fields.map((f) => ({
+        ...f,
+        description: editableMap.get(f.fieldPath) ?? f.description,
+    }));
+}
+
+// ---------------------------------------------------------------------------
+// Description mutations
+// ---------------------------------------------------------------------------
+
+const UPDATE_DESCRIPTION_MUTATION = `
+    mutation updateDescription($input: DescriptionUpdateInput!) {
+        updateDescription(input: $input)
+    }
+`;
+
+export async function updateEntityDescription(urn: string, description: string): Promise<void> {
+    await graphqlQuery<{ updateDescription: boolean }>(UPDATE_DESCRIPTION_MUTATION, {
+        input: { description, resourceUrn: urn },
+    });
+}
+
+export async function updateDatasetFieldDescription(
+    datasetUrn: string,
+    fieldPath: string,
+    description: string,
+): Promise<void> {
+    await graphqlQuery<{ updateDescription: boolean }>(UPDATE_DESCRIPTION_MUTATION, {
+        input: {
+            description,
+            resourceUrn: datasetUrn,
+            subResourceType: 'DATASET_FIELD',
+            subResource: fieldPath,
+        },
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -774,6 +843,42 @@ function mapCronToFrequency(interval?: string): { frequency: ScheduleFrequency; 
     return { frequency: 'CUSTOM', cronExpression: norm };
 }
 
+// ---------------------------------------------------------------------------
+// Filter options cache — domain / tag / platform names for keyword auto-detection
+// ---------------------------------------------------------------------------
+
+export type FilterOptions = {
+    domains: Array<{ urn: string; name: string }>;
+    tags: Array<{ urn: string; name: string }>;
+    platforms: Array<{ name: string; displayName: string }>;
+};
+
+let _filterOptionsCache: FilterOptions | null = null;
+
+// Loads and caches domain/tag/platform options once per session.
+// Used by search to auto-detect which filter to apply based on the keyword.
+export async function getFilterOptions(): Promise<FilterOptions> {
+    if (_filterOptionsCache) return _filterOptionsCache;
+
+    const [domains, tags, platforms, platformNameMap] = await Promise.all([
+        listDomains(),
+        getTagAggregations(),
+        getPlatformAggregations(),
+        getPlatformNameMap(),
+    ]);
+
+    _filterOptionsCache = {
+        domains: domains.map((d) => ({ urn: d.id, name: d.name })),
+        tags: tags.map((t) => ({ urn: t.id, name: t.name })),
+        platforms: platforms.map((p) => ({
+            name: p.name,
+            displayName: platformNameMap[p.name] ?? p.name.toUpperCase(),
+        })),
+    };
+
+    return _filterOptionsCache;
+}
+
 // DataHub internal system source types that are auto-recreated on restart and cannot be permanently deleted
 // URN prefixes for DataHub internal system entities that should not appear in user-facing search
 const SYSTEM_ENTITY_URN_PREFIXES = [
@@ -856,6 +961,20 @@ export async function listIngestionSchedules(): Promise<AutoUpdateSchedule[]> {
             retainHistory: 30,
         };
     });
+}
+
+// Map platform type key (e.g. "mysql") → connection name (e.g. "MySQL Kho Hàng").
+// If multiple connections share the same type, the first one wins.
+export async function getPlatformNameMap(): Promise<Record<string, string>> {
+    const sources = await listIngestionSources();
+    const map: Record<string, string> = {};
+    for (const src of sources) {
+        // Use CONNECTION_TYPE_TO_SOURCE_TYPE to get the actual DataHub platform key
+        // e.g. POSTGRESQL → 'postgres' (matches urn:li:dataPlatform:postgres)
+        const key = CONNECTION_TYPE_TO_SOURCE_TYPE[src.type] ?? src.type.toLowerCase();
+        if (!map[key]) map[key] = src.name;
+    }
+    return map;
 }
 
 // Trigger an immediate ingestion run for the given source URN

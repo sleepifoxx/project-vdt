@@ -15,6 +15,7 @@ services:
   viettel-metahub-frontend:
     hostname: viettel-metahub-frontend
     image: viettel-metahub-frontend:latest
+    pull_policy: build
     build:
       context: ../viettel-metahub-frontend
       dockerfile: Dockerfile

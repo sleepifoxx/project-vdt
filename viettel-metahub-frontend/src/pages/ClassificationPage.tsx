@@ -25,6 +25,7 @@ import {
     removeEntityTag,
     updateEntityDomains,
     refetchEntityMeta,
+    getPlatformNameMap,
 } from '../api/datahubApi';
 
 const { Text } = Typography;
@@ -94,12 +95,14 @@ export default function ClassificationPage() {
     const [addingDomainFor, setAddingDomainFor] = useState<string | null>(null);
     const [addingTagFor, setAddingTagFor] = useState<string | null>(null);
     const [saving, setSaving] = useState<Set<string>>(new Set());
+    const [platformNameMap, setPlatformNameMap] = useState<Record<string, string>>({});
 
     const pageSize = 10;
 
     useEffect(() => {
         listDomains().then(setAvailableDomains).catch(() => {});
         getTagAggregations().then(setAvailableTags).catch(() => {});
+        getPlatformNameMap().then(setPlatformNameMap).catch(() => {});
     }, []);
 
     const loadEntities = useCallback(
@@ -230,7 +233,7 @@ export default function ClassificationPage() {
                     </Text>
                     <br />
                     <Text type="secondary" style={{ fontSize: 11 }}>
-                        {record.platform.toUpperCase()}
+                        {platformNameMap[record.platform] ?? record.platform.toUpperCase()}
                     </Text>
                 </div>
             ),
