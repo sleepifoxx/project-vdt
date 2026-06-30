@@ -1,13 +1,15 @@
 """
-Vietnamese semantic search service.
+Unified search service: keyword search + Vietnamese semantic expansion.
 
-Strategy (no external AI API required):
-1. Normalize input (strip diacritics variant lookup + lowercase)
-2. Lookup in the VN→EN business-term dictionary
-3. Merge original query + all English synonyms into a multi-term DataHub search
-4. De-duplicate results by URN, keeping highest-relevance hit
+Flow for every query:
+1. Build wildcard keyword query  ("khach hang" → "khach* hang*")
+2. Translate VN → EN synonyms   ("khach hang" → ["customer", "client", "buyer"])
+3. Run keyword query + all synonym queries in parallel against DataHub GraphQL
+4. Merge results: keyword hits first (best relevance), synonyms fill in extras
+5. Deduplicate by URN
 """
 
+import asyncio
 import json
 import unicodedata
 from pathlib import Path
@@ -19,46 +21,63 @@ from app.services.datahub_client import DataHubClient
 _DICT_PATH = Path(__file__).parent.parent / "data" / "vn_en_dict.json"
 _vn_en: dict[str, list[str]] = json.loads(_DICT_PATH.read_text(encoding="utf-8"))
 
+# System entity URN prefixes that should never appear in user-facing results
+_SYSTEM_PREFIXES = (
+    "urn:li:document:",
+    "urn:li:domain:",
+    "urn:li:tag:",
+    "urn:li:container:",
+    "urn:li:glossaryTerm:",
+    "urn:li:glossaryNode:",
+    "urn:li:dataHubPolicy:",
+    "urn:li:dataHubRole:",
+    "urn:li:dataHubView:",
+    "urn:li:assertion:",
+    "urn:li:test:",
+)
+
 
 def _normalize(text: str) -> str:
-    """Lowercase + strip Vietnamese diacritics → ASCII."""
     nfkd = unicodedata.normalize("NFKD", text)
     return "".join(c for c in nfkd if not unicodedata.combining(c)).lower().strip()
 
 
+def _build_wildcard_query(query: str) -> str:
+    """mirrors frontend buildSmartQuery: each word gets a * suffix."""
+    stripped = query.strip()
+    if not stripped or stripped == "*":
+        return "*"
+    words = stripped.split()
+    return " ".join(f"{w}*" for w in words)
+
+
 def translate_query(query: str) -> list[str]:
-    """
-    Return a list of search terms to try:
-    - original query (DataHub handles partial VN matches via Elasticsearch)
-    - English synonyms from the dictionary
-    """
+    """Return English synonyms for a Vietnamese query (empty list if none found)."""
     key_original = query.lower().strip()
     key_normalized = _normalize(query)
 
-    terms: list[str] = [query]
+    synonyms: list[str] = []
 
-    # Direct match on original
     if key_original in _vn_en:
-        terms.extend(_vn_en[key_original])
+        synonyms.extend(_vn_en[key_original])
 
-    # Match on normalized (no diacritics) if different
     if key_normalized != key_original and key_normalized in _vn_en:
-        terms.extend(_vn_en[key_normalized])
+        for s in _vn_en[key_normalized]:
+            if s not in synonyms:
+                synonyms.append(s)
 
-    # Partial phrase match — check if any dict key is contained in the query
-    for key, synonyms in _vn_en.items():
+    # Partial phrase match
+    for key, syns in _vn_en.items():
         if len(key) > 2 and key in key_original and key != key_original:
-            terms.extend(synonyms)
+            for s in syns:
+                if s not in synonyms:
+                    synonyms.append(s)
 
-    # Remove duplicates while preserving order
-    seen: set[str] = set()
-    unique: list[str] = []
-    for t in terms:
-        if t.lower() not in seen:
-            seen.add(t.lower())
-            unique.append(t)
+    return synonyms
 
-    return unique
+
+def _is_system_entity(urn: str) -> bool:
+    return urn.startswith(_SYSTEM_PREFIXES)
 
 
 def _deduplicate(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -66,13 +85,13 @@ def _deduplicate(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for r in results:
         urn = r.get("entity", {}).get("urn", "")
-        if urn and urn not in seen:
+        if urn and urn not in seen and not _is_system_entity(urn):
             seen.add(urn)
             out.append(r)
     return out
 
 
-class SemanticSearchService:
+class SearchService:
     def __init__(self) -> None:
         self._client = DataHubClient()
 
@@ -82,49 +101,72 @@ class SemanticSearchService:
         entity_types: list[str] | None = None,
         start: int = 0,
         count: int = 20,
-        filters: list[dict] | None = None,
+        filters: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        terms = translate_query(query)
+        is_wildcard = not query.strip() or query.strip() == "*"
 
-        all_results: list[dict[str, Any]] = []
-        total = 0
+        if is_wildcard:
+            result = await self._client.search(
+                query="*",
+                entity_types=entity_types,
+                start=start,
+                count=count,
+                filters=filters,
+            )
+            deduplicated = _deduplicate(result.get("searchResults", []))
+            return {
+                "total": result.get("total", 0),
+                "searchResults": deduplicated,
+                "translatedTerms": [],
+            }
 
-        # Search with original query first (preserves Elasticsearch ranking)
-        primary = await self._client.search(
-            query=terms[0],
-            entity_types=entity_types,
-            start=start,
-            count=count,
-            filters=filters,
-        )
-        all_results.extend(primary.get("searchResults", []))
-        total = primary.get("total", 0)
+        # Build keyword query with wildcards (mirrors frontend buildSmartQuery)
+        keyword_query = _build_wildcard_query(query)
 
-        # Search with English synonyms; take up to count - len(primary) extras
-        remaining = count - len(all_results)
-        for term in terms[1:]:
-            if remaining <= 0:
-                break
+        # Get semantic synonyms
+        synonyms = translate_query(query)
+
+        # Run keyword search + all synonym searches in parallel
+        tasks: list[asyncio.Task[dict[str, Any]]] = []
+
+        async def _safe_search(q: str, s: int = 0, c: int = count) -> dict[str, Any]:
             try:
-                extra = await self._client.search(
-                    query=term,
+                return await self._client.search(
+                    query=q,
                     entity_types=entity_types,
-                    start=0,
-                    count=remaining,
+                    start=s,
+                    count=c,
                     filters=filters,
                 )
-                new_hits = extra.get("searchResults", [])
-                all_results.extend(new_hits)
-                total = max(total, extra.get("total", 0))
-                remaining -= len(new_hits)
             except Exception:
-                # Synonym search is best-effort; don't fail the whole request
-                continue
+                return {"total": 0, "searchResults": []}
 
-        deduplicated = _deduplicate(all_results)
+        async with asyncio.TaskGroup() as tg:
+            # Keyword search with pagination support
+            keyword_task = tg.create_task(_safe_search(keyword_query, start, count))
+            # Synonym searches always from page 0 (fill extras only)
+            synonym_tasks = [
+                tg.create_task(_safe_search(syn, 0, count))
+                for syn in synonyms
+            ]
+
+        keyword_result = keyword_task.result()
+        keyword_hits = keyword_result.get("searchResults", [])
+        total = keyword_result.get("total", 0)
+
+        # Collect synonym hits — append after keyword hits for dedup to prefer keyword order
+        all_hits = list(keyword_hits)
+        for task in synonym_tasks:
+            all_hits.extend(task.result().get("searchResults", []))
+
+        deduplicated = _deduplicate(all_hits)
+
+        # total reflects keyword search total; add unique synonym-only hits
+        synonym_only = len(deduplicated) - len(_deduplicate(keyword_hits))
+        adjusted_total = max(total + max(synonym_only, 0), len(deduplicated))
 
         return {
-            "total": max(total, len(deduplicated)),
+            "total": adjusted_total,
             "searchResults": deduplicated[:count],
-            "translatedTerms": terms,
+            "translatedTerms": [query] + synonyms if synonyms else [],
         }

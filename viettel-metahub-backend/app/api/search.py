@@ -3,10 +3,10 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from app.services.semantic_search import SemanticSearchService, translate_query
+from app.services.semantic_search import SearchService, translate_query
 
 router = APIRouter(prefix="/api/search", tags=["search"])
-_service = SemanticSearchService()
+_service = SearchService()
 
 
 class SearchResult(BaseModel):
@@ -18,26 +18,43 @@ class SearchResult(BaseModel):
 
 @router.get("", response_model=SearchResult)
 async def search(
-    q: str = Query(..., description="Search query (Vietnamese or English)"),
+    q: str = Query("*", description="Search query (Vietnamese or English, '*' for all)"),
     types: str = Query(
-        "DATASET,DASHBOARD,CHART",
+        "DATASET,DASHBOARD,CHART,DATA_FLOW,DATA_JOB,CORP_USER,CORP_GROUP",
         description="Comma-separated entity types",
     ),
     start: int = Query(0, ge=0),
-    count: int = Query(20, ge=1, le=100),
+    count: int = Query(10, ge=1, le=100),
     domain: str | None = Query(None, description="Filter by domain URN"),
+    tag: str | None = Query(None, description="Filter by tag URN"),
     platform: str | None = Query(None, description="Filter by platform name"),
+    start_date: int | None = Query(None, description="Filter lastModifiedAt >= epoch ms"),
+    end_date: int | None = Query(None, description="Filter lastModifiedAt <= epoch ms"),
 ) -> SearchResult:
-    if not q.strip():
-        raise HTTPException(status_code=400, detail="Query cannot be empty")
-
     entity_types = [t.strip().upper() for t in types.split(",") if t.strip()]
 
-    filters: list[dict] = []
+    filters: list[dict[str, Any]] = []
     if domain:
         filters.append({"field": "domains", "values": [domain]})
+    if tag:
+        filters.append({"field": "tags", "values": [tag]})
     if platform:
-        filters.append({"field": "platform", "values": [platform]})
+        filters.append({
+            "field": "platform",
+            "values": [f"urn:li:dataPlatform:{platform}" if not platform.startswith("urn:") else platform],
+        })
+    if start_date:
+        filters.append({
+            "field": "lastModifiedAt",
+            "values": [str(start_date)],
+            "condition": "GREATER_THAN_OR_EQUAL_TO",
+        })
+    if end_date:
+        filters.append({
+            "field": "lastModifiedAt",
+            "values": [str(end_date)],
+            "condition": "LESS_THAN_OR_EQUAL_TO",
+        })
 
     try:
         result = await _service.search(
@@ -59,9 +76,11 @@ async def search(
 
 
 @router.get("/translate")
-async def translate(q: str = Query(..., description="Vietnamese query to translate")) -> dict:
-    """Preview how a query is expanded to English search terms."""
+async def translate(q: str = Query(...)) -> dict:
+    """Preview Vietnamese → English term expansion."""
+    synonyms = translate_query(q)
     return {
         "query": q,
-        "terms": translate_query(q),
+        "synonyms": synonyms,
+        "allTerms": [q] + synonyms,
     }

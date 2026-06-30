@@ -9,7 +9,7 @@ export type EntityType =
 
 export type MetadataStatus = 'ACTIVE' | 'DEPRECATED' | 'REMOVED';
 
-export type ConnectionType = 'MYSQL' | 'POSTGRESQL' | 'ORACLE' | 'MSSQL' | 'MONGODB' | 'KAFKA' | 'HIVE' | 'SPARK' | 'REST_API' | 'JDBC';
+export type ConnectionType = 'CUSTOM' | 'MYSQL' | 'POSTGRESQL' | 'ORACLE' | 'MSSQL' | 'MONGODB' | 'KAFKA' | 'HIVE' | 'SPARK' | 'REST_API' | 'JDBC';
 
 export type ScheduleFrequency = 'HOURLY' | 'DAILY' | 'WEEKLY' | 'MONTHLY' | 'CUSTOM';
 
@@ -71,13 +71,25 @@ export interface ConnectionConfig {
     id: string;
     name: string;
     type: ConnectionType;
-    host: string;
-    port: number;
+    // Standard DB fields
+    host?: string;
+    port?: number;
     database?: string;
-    username: string;
+    username?: string;
     password?: string;
-    ssl: boolean;
-    extraParams?: Record<string, string>;
+    ssl?: boolean;
+    // PostgreSQL
+    schema?: string;
+    // Oracle
+    serviceNameOrSid?: string;
+    // Kafka
+    bootstrapServers?: string;
+    schemaRegistryUrl?: string;
+    // REST_API / JDBC
+    connectionUrl?: string;
+    token?: string;
+    // Custom raw recipe (YAML)
+    customRecipe?: string;
     status: 'CONNECTED' | 'DISCONNECTED' | 'ERROR' | 'TESTING';
     lastTestedAt?: string;
 }

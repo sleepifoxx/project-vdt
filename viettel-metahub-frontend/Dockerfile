@@ -28,7 +28,8 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 # URL of DataHub frontend (Play Framework), which handles auth and proxies
 # /api/* and /openapi/* to GMS. Matches VITE_PROXY_TARGET in dev.
 ENV DATAHUB_FRONTEND_URL=http://datahub-frontend-react:9002
+ENV SEMANTIC_BACKEND_URL=http://viettel-metahub-backend:8000
 
 EXPOSE 80
 
-CMD ["/bin/sh", "-c", "envsubst '${DATAHUB_FRONTEND_URL}' < /etc/nginx/templates/default.conf.template > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'"]
+CMD ["/bin/sh", "-c", "envsubst '${DATAHUB_FRONTEND_URL} ${SEMANTIC_BACKEND_URL}' < /etc/nginx/templates/default.conf.template > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'"]

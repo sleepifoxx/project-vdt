@@ -14,41 +14,61 @@ query searchAcrossEntities($input: SearchAcrossEntitiesInput!) {
                 type
                 ... on Dataset {
                     name
-                    platform { name }
+                    platform { name urn }
                     properties { description name qualifiedName }
                     editableProperties { description }
+                    lastIngested
+                    status { removed }
                     ownership {
                         owners {
                             owner {
-                                ... on CorpUser { username properties { displayName } }
+                                ... on CorpUser { username }
+                                ... on CorpGroup { name }
                             }
                         }
                     }
-                    tags {
-                        tags { tag { urn name } }
-                    }
-                    domain {
-                        domain { urn properties { name } }
-                    }
+                    tags { tags { tag { name urn } } }
+                    domain { domain { urn ... on Domain { properties { name } } } }
                 }
                 ... on Dashboard {
                     dashboardId
                     properties { name description }
-                    platform { name }
+                    platform { name urn }
+                    tags { tags { tag { name urn } } }
+                    ownership {
+                        owners {
+                            owner {
+                                ... on CorpUser { username }
+                            }
+                        }
+                    }
                 }
                 ... on Chart {
                     chartId
                     properties { name description }
-                    platform { name }
+                    platform { name urn }
+                    tags { tags { tag { name urn } } }
+                }
+                ... on DataFlow {
+                    flowId
+                    properties { name description }
+                    platform { name urn }
+                }
+                ... on DataJob {
+                    jobId
+                    properties { name description }
+                    dataFlow { platform { name urn } }
+                }
+                ... on CorpUser {
+                    username
+                    properties { displayName email }
+                }
+                ... on CorpGroup {
+                    name
+                    properties { displayName description }
                 }
             }
-            matchedFields {
-                name
-                value
-            }
-            insights {
-                text
-            }
+            matchedFields { name value }
         }
     }
 }
@@ -76,7 +96,10 @@ class DataHubClient:
                 "query": query,
                 "start": start,
                 "count": count,
-                "types": entity_types or ["DATASET", "DASHBOARD", "CHART"],
+                "types": entity_types or [
+                    "DATASET", "DASHBOARD", "CHART",
+                    "DATA_FLOW", "DATA_JOB", "CORP_USER", "CORP_GROUP",
+                ],
             }
         }
         if filters:

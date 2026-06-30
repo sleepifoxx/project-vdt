@@ -271,37 +271,42 @@ export async function semanticSearchEntities(params: {
     types?: EntityType[];
     platforms?: string[];
     domainUrns?: string[];
+    tagUrns?: string[];
+    startDate?: number;
+    endDate?: number;
     start?: number;
     count?: number;
 }): Promise<{ entities: MetadataEntity[]; total: number; translatedTerms: string[] }> {
     const url = new URL('/semantic/api/search', window.location.origin);
-    url.searchParams.set('q', params.query);
+    url.searchParams.set('q', params.query || '*');
     if (params.types && params.types.length > 0) {
         url.searchParams.set('types', params.types.join(','));
     }
     if (params.platforms && params.platforms.length > 0) {
-        url.searchParams.set('platform', params.platforms.join(','));
+        url.searchParams.set('platform', params.platforms[0]);
     }
     if (params.domainUrns && params.domainUrns.length > 0) {
         url.searchParams.set('domain', params.domainUrns[0]);
+    }
+    if (params.tagUrns && params.tagUrns.length > 0) {
+        url.searchParams.set('tag', params.tagUrns[0]);
+    }
+    if (params.startDate) {
+        url.searchParams.set('start_date', String(params.startDate));
+    }
+    if (params.endDate) {
+        url.searchParams.set('end_date', String(params.endDate));
     }
     url.searchParams.set('start', String(params.start ?? 0));
     url.searchParams.set('count', String(params.count ?? 10));
 
     const resp = await fetch(url.toString(), { credentials: 'include' });
     if (!resp.ok) {
-        throw new Error(`Semantic search failed: ${resp.status} ${resp.statusText}`);
+        throw new Error(`Search failed: ${resp.status} ${resp.statusText}`);
     }
     const json = await resp.json();
 
-    const SYSTEM_URN_PREFIXES = [
-        'urn:li:document:', 'urn:li:domain:', 'urn:li:tag:', 'urn:li:container:',
-        'urn:li:glossaryTerm:', 'urn:li:glossaryNode:', 'urn:li:dataHubPolicy:',
-        'urn:li:dataHubRole:', 'urn:li:dataHubView:', 'urn:li:assertion:', 'urn:li:test:',
-    ];
-
     const entities: MetadataEntity[] = (json.searchResults as Array<{ entity: GmsEntity }>)
-        .filter((r) => !SYSTEM_URN_PREFIXES.some((p) => r.entity.urn.startsWith(p)))
         .map((r) => mapGmsEntityToLocal(r.entity));
 
     return {
@@ -1027,6 +1032,47 @@ export async function getPlatformNameMap(): Promise<Record<string, string>> {
     return map;
 }
 
+const INGESTION_SOURCE_EXECUTIONS_QUERY = `
+    query getIngestionSourceExecutions($urn: String!, $start: Int, $count: Int) {
+        ingestionSource(urn: $urn) {
+            executions(start: $start, count: $count) {
+                total
+                executionRequests {
+                    urn
+                    input { requestedAt executorId }
+                    result {
+                        status
+                        startTimeMs
+                        durationMs
+                        report
+                    }
+                }
+            }
+        }
+    }
+`;
+
+export type IngestionExecution = {
+    urn: string;
+    input?: { requestedAt?: number; executorId?: string };
+    result?: {
+        status: string;
+        startTimeMs?: number;
+        durationMs?: number;
+        report?: string;
+    };
+};
+
+export async function getIngestionExecutions(
+    sourceUrn: string,
+    count = 5,
+): Promise<IngestionExecution[]> {
+    const data = await graphqlQuery<{
+        ingestionSource: { executions: { executionRequests: IngestionExecution[] } };
+    }>(INGESTION_SOURCE_EXECUTIONS_QUERY, { urn: sourceUrn, start: 0, count });
+    return data.ingestionSource?.executions?.executionRequests ?? [];
+}
+
 // Trigger an immediate ingestion run for the given source URN
 export async function runIngestionSource(ingestionSourceUrn: string): Promise<string> {
     const data = await graphqlQuery<{ createIngestionExecutionRequest: string }>(
@@ -1059,6 +1105,7 @@ const DELETE_INGESTION_SOURCE_MUTATION = `
 `;
 
 const CONNECTION_TYPE_TO_SOURCE_TYPE: Record<ConnectionType, string> = {
+    CUSTOM: 'custom',
     MYSQL: 'mysql',
     POSTGRESQL: 'postgres',
     ORACLE: 'oracle',
@@ -1082,51 +1129,73 @@ export function frequencyToCron(frequency: ScheduleFrequency, cronExpression?: s
     return map[frequency];
 }
 
-function buildRecipe(
-    type: ConnectionType,
-    host: string,
-    port: number,
-    database?: string,
-    username?: string,
-    password?: string,
-): string {
-    const sourceType = CONNECTION_TYPE_TO_SOURCE_TYPE[type];
-    const config: Record<string, unknown> = {};
-
-    if (type === 'KAFKA') {
-        config.connection = { bootstrap: `${host}:${port}` };
-    } else if (type === 'MONGODB') {
-        const auth = username ? `${username}${password ? `:${password}` : ''}@` : '';
-        config.connect_uri = `mongodb://${auth}${host}:${port}/${database ?? ''}`;
-    } else {
-        config.host_port = `${host}:${port}`;
-        if (database) config.database = database;
-        if (username) config.username = username;
-        if (password) config.password = password;
-    }
-
-    return JSON.stringify({
-        source: { type: sourceType, config },
-        sink: { type: 'datahub-rest', config: { server: 'http://datahub-gms:8080' } },
-    });
-}
-
-export async function createIngestionSource(values: {
-    name: string;
+function buildRecipe(values: {
     type: ConnectionType;
-    host: string;
-    port: number;
+    host?: string;
+    port?: number;
     database?: string;
     username?: string;
     password?: string;
-}): Promise<string> {
-    const recipe = buildRecipe(values.type, values.host, values.port, values.database, values.username, values.password);
+    ssl?: boolean;
+    schema?: string;
+    serviceNameOrSid?: string;
+    bootstrapServers?: string;
+    schemaRegistryUrl?: string;
+    connectionUrl?: string;
+    token?: string;
+    customRecipe?: string;
+}): string {
+    const { type } = values;
+
+    if (type === 'CUSTOM') {
+        return values.customRecipe ?? '{}';
+    }
+
+    const sourceType = CONNECTION_TYPE_TO_SOURCE_TYPE[type];
+    const config: Record<string, unknown> = {};
+    const sink = { type: 'datahub-rest', config: { server: 'http://datahub-gms:8080' } };
+
+    if (type === 'KAFKA') {
+        config.connection = {
+            bootstrap: values.bootstrapServers ?? `${values.host}:${values.port}`,
+            ...(values.schemaRegistryUrl ? { schema_registry_url: values.schemaRegistryUrl } : {}),
+        };
+    } else if (type === 'MONGODB') {
+        const auth = values.username ? `${values.username}${values.password ? `:${values.password}` : ''}@` : '';
+        config.connect_uri = `mongodb://${auth}${values.host}:${values.port}/${values.database ?? ''}`;
+    } else if (type === 'REST_API') {
+        config.url = values.connectionUrl ?? `http://${values.host}:${values.port}`;
+        if (values.token) config.token = values.token;
+    } else if (type === 'JDBC') {
+        config.connect_uri = values.connectionUrl ?? '';
+        if (values.username) config.username = values.username;
+        if (values.password) config.password = values.password;
+    } else if (type === 'ORACLE') {
+        config.host_port = `${values.host}:${values.port}`;
+        if (values.serviceNameOrSid) config.service_name = values.serviceNameOrSid;
+        if (values.username) config.username = values.username;
+        if (values.password) config.password = values.password;
+    } else {
+        // MySQL, POSTGRESQL, MSSQL, HIVE, SPARK
+        config.host_port = `${values.host}:${values.port}`;
+        if (values.database) config.database = values.database;
+        if (values.username) config.username = values.username;
+        if (values.password) config.password = values.password;
+        if (values.ssl) config.use_ssl = true;
+        if (type === 'POSTGRESQL' && values.schema) config.schema_pattern = { allow: [values.schema] };
+    }
+
+    return JSON.stringify({ source: { type: sourceType, config }, sink });
+}
+
+export async function createIngestionSource(values: Omit<ConnectionConfig, 'id' | 'status' | 'lastTestedAt'>): Promise<string> {
+    const recipe = buildRecipe(values);
     const data = await graphqlQuery<{ createIngestionSource: string }>(
         CREATE_INGESTION_SOURCE_MUTATION,
         {
             input: {
                 name: values.name,
-                type: CONNECTION_TYPE_TO_SOURCE_TYPE[values.type],
+                type: values.type === 'CUSTOM' ? 'custom' : CONNECTION_TYPE_TO_SOURCE_TYPE[values.type],
                 config: { recipe, executorId: 'default' },
             },
         },
@@ -1134,22 +1203,14 @@ export async function createIngestionSource(values: {
     return data.createIngestionSource;
 }
 
-export async function updateIngestionSourceDetails(urn: string, values: {
-    name: string;
-    type: ConnectionType;
-    host: string;
-    port: number;
-    database?: string;
-    username?: string;
-    password?: string;
-}): Promise<void> {
+export async function updateIngestionSourceDetails(urn: string, values: Omit<ConnectionConfig, 'id' | 'status' | 'lastTestedAt'>): Promise<void> {
     const sources = await fetchIngestionSources();
     const src = sources.find((s) => s.urn === urn);
-    const recipe = buildRecipe(values.type, values.host, values.port, values.database, values.username, values.password);
+    const recipe = buildRecipe(values);
 
     const input: Record<string, unknown> = {
         name: values.name,
-        type: CONNECTION_TYPE_TO_SOURCE_TYPE[values.type],
+        type: values.type === 'CUSTOM' ? 'custom' : CONNECTION_TYPE_TO_SOURCE_TYPE[values.type],
         config: { recipe, executorId: 'default' },
     };
     if (src?.schedule?.interval) {
