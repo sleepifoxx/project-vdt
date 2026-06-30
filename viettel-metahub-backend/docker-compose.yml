@@ -1,0 +1,14 @@
+services:
+  viettel-metahub-backend:
+    build: .
+    container_name: viettel-metahub-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DATAHUB_GRAPHQL_URL=${DATAHUB_GRAPHQL_URL:-http://host.docker.internal:9002/api/v2/graphql}
+      - DATAHUB_GMS_URL=${DATAHUB_GMS_URL:-http://host.docker.internal:8080}
+      - DATAHUB_TOKEN=${DATAHUB_TOKEN:-}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

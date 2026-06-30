@@ -1,12 +1,12 @@
 import React, { useState, useCallback } from 'react';
 import styled from 'styled-components';
-import { message } from 'antd';
+import { message, Tag } from 'antd';
 import AppLayout from '../components/layout/AppLayout';
 import SearchBar from '../components/search/SearchBar';
 import type { SearchBarOutput } from '../components/search/SearchBar';
 import SearchResults from '../components/search/SearchResults';
 import type { MetadataEntity } from '../types';
-import { searchEntities, getFilterOptions } from '../api/datahubApi';
+import { searchEntities, semanticSearchEntities, getFilterOptions } from '../api/datahubApi';
 import { buildSmartQuery, vietnameseIncludes } from '../utils/vietnamese';
 
 const PageWrapper = styled.div`
@@ -14,6 +14,15 @@ const PageWrapper = styled.div`
     display: flex;
     flex-direction: column;
     gap: 16px;
+`;
+
+const TranslationHint = styled.div`
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    font-size: 12px;
+    color: ${(props) => props.theme.colors.textTertiary ?? '#888'};
 `;
 
 const PAGE_SIZE = 10;
@@ -40,24 +49,50 @@ export default function SearchPage() {
     const [page, setPage] = useState(1);
     const [hasSearched, setHasSearched] = useState(false);
     const [lastFilters, setLastFilters] = useState<SearchBarOutput>(DEFAULT_FILTERS);
+    const [translatedTerms, setTranslatedTerms] = useState<string[]>([]);
 
     const doSearch = useCallback(async (filters: SearchBarOutput, currentPage: number) => {
         setLoading(true);
         try {
+            const hasKeyword = !!filters.keyword.trim();
             const textQuery = buildSmartQuery(filters.keyword);
 
-            // Always run the text keyword search
-            const textSearchPromise = searchEntities({
-                query: textQuery,
-                types: filters.entityTypes,
-                platforms: filters.platforms,
-                domainUrns: filters.domainUrns,
-                tagUrns: filters.tagUrns,
-                startDate: filters.startDate,
-                endDate: filters.endDate,
-                start: (currentPage - 1) * PAGE_SIZE,
-                count: PAGE_SIZE,
-            });
+            // Use semantic backend when keyword is present and no date filter (backend doesn't support date range yet)
+            const useSemanticBackend = hasKeyword && !filters.startDate && !filters.endDate;
+
+            const textSearchPromise = useSemanticBackend
+                ? semanticSearchEntities({
+                      query: filters.keyword,
+                      types: filters.entityTypes,
+                      platforms: filters.platforms,
+                      domainUrns: filters.domainUrns,
+                      start: (currentPage - 1) * PAGE_SIZE,
+                      count: PAGE_SIZE,
+                  }).catch(() =>
+                      // Fallback to direct DataHub search if backend unavailable
+                      searchEntities({
+                          query: textQuery,
+                          types: filters.entityTypes,
+                          platforms: filters.platforms,
+                          domainUrns: filters.domainUrns,
+                          tagUrns: filters.tagUrns,
+                          startDate: filters.startDate,
+                          endDate: filters.endDate,
+                          start: (currentPage - 1) * PAGE_SIZE,
+                          count: PAGE_SIZE,
+                      }).then((r) => ({ ...r, translatedTerms: [] as string[] })),
+                  )
+                : searchEntities({
+                      query: textQuery,
+                      types: filters.entityTypes,
+                      platforms: filters.platforms,
+                      domainUrns: filters.domainUrns,
+                      tagUrns: filters.tagUrns,
+                      startDate: filters.startDate,
+                      endDate: filters.endDate,
+                      start: (currentPage - 1) * PAGE_SIZE,
+                      count: PAGE_SIZE,
+                  }).then((r) => ({ ...r, translatedTerms: [] as string[] }));
 
             // On page 1, if there is a keyword and no explicit domain/tag/platform filter,
             // also check if the keyword matches any domain/tag/platform name and fetch those entities.
@@ -144,6 +179,7 @@ export default function SearchPage() {
 
             setEntities(merged);
             setTotal(textResult.total + extraCount);
+            setTranslatedTerms(textResult.translatedTerms ?? []);
             setHasSearched(true);
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -172,6 +208,17 @@ export default function SearchPage() {
         <AppLayout pageTitle="Tìm kiếm Metadata">
             <PageWrapper>
                 <SearchBar onSearch={handleSearch} loading={loading} />
+
+                {hasSearched && translatedTerms.length > 1 && (
+                    <TranslationHint>
+                        <span>Tìm kiếm ngữ nghĩa:</span>
+                        {translatedTerms.map((t) => (
+                            <Tag key={t} color="blue" style={{ margin: 0 }}>
+                                {t}
+                            </Tag>
+                        ))}
+                    </TranslationHint>
+                )}
 
                 {hasSearched && (
                     <SearchResults

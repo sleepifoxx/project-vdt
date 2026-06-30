@@ -261,6 +261,56 @@ export async function searchEntities(params: {
     };
 }
 
+// ---------------------------------------------------------------------------
+// Semantic search (via viettel-metahub-backend)
+// Translates Vietnamese queries → English synonyms before querying DataHub.
+// ---------------------------------------------------------------------------
+
+export async function semanticSearchEntities(params: {
+    query: string;
+    types?: EntityType[];
+    platforms?: string[];
+    domainUrns?: string[];
+    start?: number;
+    count?: number;
+}): Promise<{ entities: MetadataEntity[]; total: number; translatedTerms: string[] }> {
+    const url = new URL('/semantic/api/search', window.location.origin);
+    url.searchParams.set('q', params.query);
+    if (params.types && params.types.length > 0) {
+        url.searchParams.set('types', params.types.join(','));
+    }
+    if (params.platforms && params.platforms.length > 0) {
+        url.searchParams.set('platform', params.platforms.join(','));
+    }
+    if (params.domainUrns && params.domainUrns.length > 0) {
+        url.searchParams.set('domain', params.domainUrns[0]);
+    }
+    url.searchParams.set('start', String(params.start ?? 0));
+    url.searchParams.set('count', String(params.count ?? 10));
+
+    const resp = await fetch(url.toString(), { credentials: 'include' });
+    if (!resp.ok) {
+        throw new Error(`Semantic search failed: ${resp.status} ${resp.statusText}`);
+    }
+    const json = await resp.json();
+
+    const SYSTEM_URN_PREFIXES = [
+        'urn:li:document:', 'urn:li:domain:', 'urn:li:tag:', 'urn:li:container:',
+        'urn:li:glossaryTerm:', 'urn:li:glossaryNode:', 'urn:li:dataHubPolicy:',
+        'urn:li:dataHubRole:', 'urn:li:dataHubView:', 'urn:li:assertion:', 'urn:li:test:',
+    ];
+
+    const entities: MetadataEntity[] = (json.searchResults as Array<{ entity: GmsEntity }>)
+        .filter((r) => !SYSTEM_URN_PREFIXES.some((p) => r.entity.urn.startsWith(p)))
+        .map((r) => mapGmsEntityToLocal(r.entity));
+
+    return {
+        entities,
+        total: json.total as number,
+        translatedTerms: (json.translatedTerms as string[]) ?? [],
+    };
+}
+
 type CountResponse = { searchAcrossEntities: { total: number } };
 
 export async function getEntityCount(types: EntityType[]): Promise<number> {
