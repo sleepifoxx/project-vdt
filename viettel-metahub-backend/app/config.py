@@ -13,6 +13,13 @@ class Settings(BaseSettings):
     max_search_results: int = 20
     translation_fallback: bool = True
 
+    # Vector search (Qdrant + fastembed)
+    qdrant_url: str = "http://localhost:6333"
+    qdrant_collection: str = "datahub_entities"
+    embedding_model: str = "intfloat/multilingual-e5-large"
+    vector_score_threshold: float = 0.83
+    vector_min_spread: float = 0.008
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

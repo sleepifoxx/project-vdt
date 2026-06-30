@@ -265,6 +265,28 @@ export async function searchEntities(params: {
 // Semantic search (via viettel-metahub-backend)
 // Translates Vietnamese queries → English synonyms before querying DataHub.
 // ---------------------------------------------------------------------------
+// Vector ingest trigger — called after "Chạy ngay" to re-embed a platform's entities
+// ---------------------------------------------------------------------------
+
+/** Map from ConnectionType to DataHub platform name */
+export const CONNECTION_TYPE_TO_PLATFORM: Record<string, string> = {
+    MYSQL:      'mysql',
+    POSTGRESQL: 'postgres',
+    ORACLE:     'oracle',
+    MSSQL:      'mssql',
+    MONGODB:    'mongodb',
+    KAFKA:      'kafka',
+    HIVE:       'hive',
+    SPARK:      'spark',
+};
+
+export async function triggerVectorIngest(platform: string): Promise<void> {
+    const url = new URL('/semantic/api/search/ingest', window.location.origin);
+    url.searchParams.set('platform', platform);
+    await fetch(url.toString(), { method: 'POST', credentials: 'include' });
+}
+
+// ---------------------------------------------------------------------------
 
 export async function semanticSearchEntities(params: {
     query: string;
@@ -276,6 +298,7 @@ export async function semanticSearchEntities(params: {
     endDate?: number;
     start?: number;
     count?: number;
+    aiSearch?: boolean;
 }): Promise<{ entities: MetadataEntity[]; total: number; translatedTerms: string[] }> {
     const url = new URL('/semantic/api/search', window.location.origin);
     url.searchParams.set('q', params.query || '*');
@@ -299,6 +322,9 @@ export async function semanticSearchEntities(params: {
     }
     url.searchParams.set('start', String(params.start ?? 0));
     url.searchParams.set('count', String(params.count ?? 10));
+    if (params.aiSearch && params.query && params.query !== '*') {
+        url.searchParams.set('ai_search', 'true');
+    }
 
     const resp = await fetch(url.toString(), { credentials: 'include' });
     if (!resp.ok) {

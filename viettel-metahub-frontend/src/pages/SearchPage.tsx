@@ -48,12 +48,12 @@ export default function SearchPage() {
     const [page, setPage] = useState(1);
     const [hasSearched, setHasSearched] = useState(false);
     const [lastFilters, setLastFilters] = useState<SearchBarOutput>(DEFAULT_FILTERS);
-    const [translatedTerms, setTranslatedTerms] = useState<string[]>([]);
+    const [aiSearch, setAiSearch] = useState(false);
 
-    const doSearch = useCallback(async (filters: SearchBarOutput, currentPage: number) => {
+    const doSearch = useCallback(async (filters: SearchBarOutput, currentPage: number, useAiSearch = false) => {
         setLoading(true);
         try {
-            // Main search via backend (keyword + semantic combined)
+            // Main search via backend (keyword + semantic combined, or vector if AI mode)
             const mainSearchPromise = semanticSearchEntities({
                 query: filters.keyword || '*',
                 types: filters.entityTypes,
@@ -64,6 +64,7 @@ export default function SearchPage() {
                 endDate: filters.endDate,
                 start: (currentPage - 1) * PAGE_SIZE,
                 count: PAGE_SIZE,
+                aiSearch: useAiSearch,
             });
 
             // On page 1 with keyword but no explicit filters: auto-detect domain/tag/platform
@@ -130,7 +131,6 @@ export default function SearchPage() {
 
             setEntities(merged);
             setTotal(mainResult.total + extraCount);
-            setTranslatedTerms(mainResult.translatedTerms ?? []);
             setHasSearched(true);
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -145,29 +145,25 @@ export default function SearchPage() {
         (filters: SearchBarOutput) => {
             setPage(1);
             setLastFilters(filters);
-            doSearch(filters, 1);
+            doSearch(filters, 1, aiSearch);
         },
-        [doSearch],
+        [doSearch, aiSearch],
     );
 
     const handlePageChange = (newPage: number, _pageSize: number) => {
         setPage(newPage);
-        doSearch(lastFilters, newPage);
+        doSearch(lastFilters, newPage, aiSearch);
     };
 
     return (
         <AppLayout pageTitle="Tìm kiếm Metadata">
             <PageWrapper>
-                <SearchBar onSearch={handleSearch} loading={loading} />
+                <SearchBar onSearch={handleSearch} loading={loading} aiSearch={aiSearch} onAiSearchChange={setAiSearch} />
 
-                {hasSearched && translatedTerms.length > 1 && (
+                {hasSearched && aiSearch && (
                     <TranslationHint>
-                        <span>Tìm kiếm ngữ nghĩa:</span>
-                        {translatedTerms.map((t) => (
-                            <Tag key={t} color="blue" style={{ margin: 0 }}>
-                                {t}
-                            </Tag>
-                        ))}
+                        <Tag color="red" style={{ margin: 0, fontWeight: 600 }}>🤖 AI Search</Tag>
+                        <span>Tìm kiếm theo ngữ nghĩa đa ngôn ngữ (vector embedding)</span>
                     </TranslationHint>
                 )}
 

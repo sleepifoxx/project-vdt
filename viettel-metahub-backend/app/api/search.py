@@ -1,12 +1,14 @@
+import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel
 
-from app.services.semantic_search import SearchService, translate_query
+from app.services.semantic_search import SearchService
 
 router = APIRouter(prefix="/api/search", tags=["search"])
 _service = SearchService()
+logger = logging.getLogger(__name__)
 
 
 class SearchResult(BaseModel):
@@ -30,6 +32,7 @@ async def search(
     platform: str | None = Query(None, description="Filter by platform name"),
     start_date: int | None = Query(None, description="Filter lastModifiedAt >= epoch ms"),
     end_date: int | None = Query(None, description="Filter lastModifiedAt <= epoch ms"),
+    ai_search: bool = Query(False, description="Use vector semantic search (Qdrant)"),
 ) -> SearchResult:
     entity_types = [t.strip().upper() for t in types.split(",") if t.strip()]
 
@@ -57,13 +60,21 @@ async def search(
         })
 
     try:
-        result = await _service.search(
-            query=q,
-            entity_types=entity_types,
-            start=start,
-            count=count,
-            filters=filters if filters else None,
-        )
+        use_vector = ai_search and q.strip() and q.strip() != "*"
+        if use_vector:
+            result = await _service.vector_search(
+                query=q,
+                entity_types=entity_types,
+                count=count,
+            )
+        else:
+            result = await _service.search(
+                query=q,
+                entity_types=entity_types,
+                start=start,
+                count=count,
+                filters=filters if filters else None,
+            )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -75,12 +86,38 @@ async def search(
     )
 
 
-@router.get("/translate")
-async def translate(q: str = Query(...)) -> dict:
-    """Preview Vietnamese → English term expansion."""
-    synonyms = translate_query(q)
-    return {
-        "query": q,
-        "synonyms": synonyms,
-        "allTerms": [q] + synonyms,
-    }
+@router.post("/ingest/all", status_code=202)
+async def trigger_ingest_all(background_tasks: BackgroundTasks) -> dict:
+    """Re-index ALL entities into Qdrant (no platform filter)."""
+    from app.services.ingest_service import ingest_all
+    from app.services.datahub_client import DataHubClient
+
+    async def _run() -> None:
+        try:
+            n = await ingest_all(DataHubClient())
+            logger.info("Ingest all done: %d entities", n)
+        except Exception as exc:
+            logger.error("Ingest all failed: %s", exc)
+
+    background_tasks.add_task(_run)
+    return {"status": "ingest started", "platform": "all"}
+
+
+@router.post("/ingest", status_code=202)
+async def trigger_ingest(
+    background_tasks: BackgroundTasks,
+    platform: str = Query(..., description="DataHub platform name (e.g. mysql, postgres, kafka)"),
+) -> dict:
+    """Re-index entities of a specific platform into Qdrant (triggered by 'Chạy ngay')."""
+    from app.services.ingest_service import ingest_by_platform
+    from app.services.datahub_client import DataHubClient
+
+    async def _run() -> None:
+        try:
+            n = await ingest_by_platform(DataHubClient(), platform)
+            logger.info("Ingest done: %d entities for platform=%s", n, platform)
+        except Exception as exc:
+            logger.error("Ingest failed for platform=%s: %s", platform, exc)
+
+    background_tasks.add_task(_run)
+    return {"status": "ingest started", "platform": platform}

@@ -16,6 +16,8 @@ import {
     runIngestionSource,
     updateIngestionSourceSchedule,
     deleteIngestionSource,
+    triggerVectorIngest,
+    CONNECTION_TYPE_TO_PLATFORM,
 } from '../../api/datahubApi';
 
 const { Option } = Select;
@@ -190,7 +192,14 @@ export default function AutoUpdateSettings() {
         try {
             await runIngestionSource(id);
             message.success('Đã kích hoạt thu thập metadata thành công!');
-            // Refresh schedules after a short delay to pick up new execution status
+
+            // Re-embed entities of this connection into Qdrant
+            const conn = connections.find((c) => c.id === id);
+            const platform = conn ? CONNECTION_TYPE_TO_PLATFORM[conn.type] : undefined;
+            if (platform) {
+                triggerVectorIngest(platform).catch(() => {/* non-fatal */});
+            }
+
             setTimeout(() => {
                 listIngestionSchedules()
                     .then(setSchedules)

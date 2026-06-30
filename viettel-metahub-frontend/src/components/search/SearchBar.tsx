@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { Input, Select, Button, Space, Tag, Tooltip, DatePicker, Spin } from 'antd';
+import { Input, Select, Button, Space, Tag, Tooltip, DatePicker, Spin, Switch } from 'antd';
 import {
     SearchOutlined,
     FilterOutlined,
@@ -11,6 +11,7 @@ import {
     UserOutlined,
     TeamOutlined,
     ArrowRightOutlined,
+    RobotOutlined,
 } from '@ant-design/icons';
 import styled from 'styled-components';
 import type { Dayjs } from 'dayjs';
@@ -34,6 +35,8 @@ export type SearchBarOutput = {
 type Props = {
     onSearch: (params: SearchBarOutput) => void;
     loading?: boolean;
+    aiSearch?: boolean;
+    onAiSearchChange?: (val: boolean) => void;
 };
 
 // ── Styled components ──────────────────────────────────────────────────────────
@@ -373,7 +376,7 @@ function highlightText(text: string, query: string): React.ReactNode {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export default function SearchBar({ onSearch, loading }: Props) {
+export default function SearchBar({ onSearch, loading, aiSearch, onAiSearchChange }: Props) {
     const [keyword, setKeyword] = useState('');
     const [selectedTypes, setSelectedTypes] = useState<EntityType[]>([]);
     const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([]);
@@ -418,10 +421,10 @@ export default function SearchBar({ onSearch, loading }: Props) {
         ]).finally(() => setLoadingOptions(false));
     }, [showFilters]);
 
-    // Debounced preview search — triggers whenever keyword changes
+    // Debounced preview search — triggers whenever keyword changes (disabled in AI search mode)
     useEffect(() => {
         const trimmed = keyword.trim();
-        if (trimmed.length < 2) {
+        if (trimmed.length < 2 || aiSearch) {
             setShowPreview(false);
             setPreviewResults([]);
             return;
@@ -466,7 +469,7 @@ export default function SearchBar({ onSearch, loading }: Props) {
         // selectedTypes/Platforms/Domains/Tags intentionally omitted — preview reflects
         // the keyword change; filters are applied on explicit search.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [keyword]);
+    }, [keyword, aiSearch]);
 
     // Close preview when clicking outside the input row
     useEffect(() => {
@@ -648,10 +651,25 @@ export default function SearchBar({ onSearch, loading }: Props) {
                                 `(${selectedTypes.length + selectedPlatforms.length + selectedDomains.length + selectedTags.length + (dateRange ? 1 : 0)})`}
                         </Button>
                     </Tooltip>
+
+                    <Tooltip title={aiSearch ? 'Tắt AI Search – chuyển về tìm kiếm từ khoá' : 'Bật AI Search – tìm kiếm ngữ nghĩa đa ngôn ngữ (Tiếng Việt ↔ Tiếng Anh)'}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 4px' }}>
+                            <Switch
+                                checked={aiSearch ?? false}
+                                onChange={onAiSearchChange}
+                                checkedChildren={<Space size={3}><RobotOutlined />AI</Space>}
+                                unCheckedChildren={<RobotOutlined />}
+                                style={aiSearch ? { backgroundColor: '#ee0033' } : {}}
+                            />
+                            <span style={{ fontSize: 12, color: aiSearch ? '#ee0033' : '#999', fontWeight: 600, whiteSpace: 'nowrap' }}>
+                                AI Search
+                            </span>
+                        </div>
+                    </Tooltip>
                 </SearchInputRow>
 
                 {/* ── Preview dropdown ── */}
-                {showPreview && keyword.trim().length >= 2 && (
+                {showPreview && keyword.trim().length >= 2 && !aiSearch && (
                     <PreviewDropdown>
                         {/* Quick filter suggestions: matching domains / tags / platforms */}
                         {filterOptions && (() => {
