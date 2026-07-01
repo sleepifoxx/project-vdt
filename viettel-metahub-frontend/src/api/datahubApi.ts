@@ -902,24 +902,17 @@ function parseRecipe(recipe?: string, sourceType?: string): Pick<ConnectionConfi
 }
 
 // Map cron interval → ScheduleFrequency
+// Only map to a preset when the interval exactly matches what frequencyToCron() produces.
+// Anything else is treated as CUSTOM to preserve the original expression.
 function mapCronToFrequency(interval?: string): { frequency: ScheduleFrequency; cronExpression?: string } {
     if (!interval) return { frequency: 'CUSTOM' };
     const norm = interval.trim();
 
-    // Named intervals
-    if (norm === '@hourly') return { frequency: 'HOURLY' };
-    if (norm === '@daily' || norm === '@midnight') return { frequency: 'DAILY' };
-    if (norm === '@weekly') return { frequency: 'WEEKLY' };
-    if (norm === '@monthly') return { frequency: 'MONTHLY' };
-
-    const parts = norm.split(/\s+/);
-    if (parts.length === 5) {
-        const [, hour, dom, month, dow] = parts;
-        if (hour === '*' && dom === '*' && month === '*' && dow === '*') return { frequency: 'HOURLY' };
-        if (dom === '*' && month === '*' && dow === '*') return { frequency: 'DAILY' };
-        if (dom === '*' && month === '*') return { frequency: 'WEEKLY' };
-        if (month === '*' && dow === '*') return { frequency: 'MONTHLY' };
-    }
+    if (norm === '@hourly'   || norm === '0 * * * *')   return { frequency: 'HOURLY' };
+    if (norm === '@daily'    || norm === '@midnight'
+                             || norm === '0 0 * * *')   return { frequency: 'DAILY' };
+    if (norm === '@weekly'   || norm === '0 0 * * 0')   return { frequency: 'WEEKLY' };
+    if (norm === '@monthly'  || norm === '0 0 1 * *')   return { frequency: 'MONTHLY' };
 
     return { frequency: 'CUSTOM', cronExpression: norm };
 }
@@ -1281,6 +1274,92 @@ export async function deleteIngestionSource(urn: string): Promise<void> {
     );
 }
 
+
+// ---------------------------------------------------------------------------
+// Lineage
+// ---------------------------------------------------------------------------
+
+const LINEAGE_QUERY = `
+    query getLineage($input: SearchAcrossLineageInput!) {
+        searchAcrossLineage(input: $input) {
+            searchResults {
+                degree
+                entity {
+                    urn
+                    type
+                    ... on Dataset {
+                        name
+                        platform { name }
+                        properties { name }
+                    }
+                    ... on Dashboard {
+                        properties { name }
+                        platform { name }
+                    }
+                    ... on Chart {
+                        properties { name }
+                        platform { name }
+                    }
+                    ... on DataJob {
+                        jobId
+                        properties { name }
+                        dataFlow { platform { name } }
+                    }
+                    ... on DataFlow {
+                        flowId
+                        properties { name }
+                        platform { name }
+                    }
+                    ... on CorpUser { username }
+                    ... on CorpGroup { name }
+                }
+            }
+        }
+    }
+`;
+
+export type LineageEntity = {
+    urn: string;
+    name: string;
+    type: EntityType;
+    platform: string;
+};
+
+type LineageResponse = {
+    searchAcrossLineage: {
+        searchResults: Array<{ degree: number; entity: GmsEntity }>;
+    };
+};
+
+export async function fetchEntityLineage(urn: string): Promise<{
+    upstreams: LineageEntity[];
+    downstreams: LineageEntity[];
+}> {
+    const [upResult, downResult] = await Promise.all([
+        graphqlQuery<LineageResponse>(LINEAGE_QUERY, {
+            input: { urn, direction: 'UPSTREAM', start: 0, count: 30 },
+        }),
+        graphqlQuery<LineageResponse>(LINEAGE_QUERY, {
+            input: { urn, direction: 'DOWNSTREAM', start: 0, count: 30 },
+        }),
+    ]);
+
+    const mapNode = (e: GmsEntity): LineageEntity => ({
+        urn: e.urn,
+        name: resolveName(e),
+        type: mapEntityType(e.type),
+        platform: resolvePlatform(e),
+    });
+
+    return {
+        upstreams: upResult.searchAcrossLineage.searchResults
+            .filter((r) => r.degree === 1)
+            .map((r) => mapNode(r.entity)),
+        downstreams: downResult.searchAcrossLineage.searchResults
+            .filter((r) => r.degree === 1)
+            .map((r) => mapNode(r.entity)),
+    };
+}
 
 // ---------------------------------------------------------------------------
 // Metadata ingest (REST API via Play proxy → GMS)

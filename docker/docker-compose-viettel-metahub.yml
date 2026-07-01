@@ -333,7 +333,7 @@ services:
       - KAFKA_MESSAGE_MAX_BYTES=5242880
       - KAFKA_MAX_MESSAGE_BYTES=5242880
     healthcheck:
-      test: nc -z broker $${DATAHUB_KAFKA_BROKER_PORT:-9092}
+      test: nc -z broker 29092
       start_period: 60s
       interval: 1s
       retries: 5

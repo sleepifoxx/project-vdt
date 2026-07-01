@@ -16,6 +16,7 @@ import {
     updateEntityDescription, updateDatasetFieldDescription, getPlatformNameMap,
 } from '../../api/datahubApi';
 import type { SchemaField } from '../../api/datahubApi';
+import LineageTab from './LineageTab';
 
 const { Text, Paragraph } = Typography;
 
@@ -615,6 +616,13 @@ export default function EntityDetailDrawer({ entity, open, onClose, onEntityUpda
         ...(localEntity?.type === 'DATASET'
             ? [{ key: 'schema', label: 'Schema', children: schemaTab }]
             : []),
+        {
+            key: 'lineage',
+            label: 'Sơ đồ luồng',
+            children: localEntity ? (
+                <LineageTab entity={localEntity} active={activeTab === 'lineage'} />
+            ) : null,
+        },
         { key: 'history', label: 'Lịch sử', children: historyTab },
     ];
 
