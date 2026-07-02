@@ -1,6 +1,6 @@
 # Viettel MetaHub
 
-**Viettel MetaHub** là nền tảng quản lý metadata dữ liệu nội bộ của Viettel, được xây dựng trên nền tảng [DataHub](https://datahubproject.io/). Dự án bổ sung giao diện người dùng tuỳ chỉnh và lớp tìm kiếm ngữ nghĩa tiếng Việt (AI Semantic Search) dựa trên vector embedding, giúp người dùng tìm kiếm tài sản dữ liệu (dataset, dashboard, pipeline, v.v.) một cách thông minh và chính xác hơn.
+**Viettel MetaHub** là nền tảng quản lý metadata, được xây dựng trên nền tảng [DataHub](https://datahubproject.io/). Dự án bổ sung giao diện người dùng tuỳ chỉnh và lớp tìm kiếm ngữ nghĩa tiếng Việt (AI Semantic Search) dựa trên vector embedding, giúp người dùng tìm kiếm tài sản dữ liệu (dataset, dashboard, pipeline, v.v.) một cách thông minh và chính xác hơn.
 
 ---
 
